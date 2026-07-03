@@ -1,0 +1,240 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Boon Academy Intervention Command Center</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    margin: 0; padding: 2.5rem; background: #f4f6fb; color: #1a1f36;
+  }
+  h1 { font-size: 1.9rem; margin-bottom: 0.15rem; }
+  .subtitle { color: #5b6470; margin-bottom: 2rem; }
+  .kpi-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 1rem; margin-bottom: 2.5rem;
+  }
+  .kpi-card {
+    background: #fff; border-radius: 14px; padding: 1.1rem 1.3rem;
+    box-shadow: 0 1px 3px rgba(20,20,43,0.08); border-left: 5px solid #4f5df0;
+  }
+  .kpi-card .label { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; color: #6b7280; margin-bottom: 0.35rem; }
+  .kpi-card .value { font-size: 1.7rem; font-weight: 700; }
+  .kpi-card.critical { border-left-color: #d03b3b; }
+  .kpi-card.high { border-left-color: #ec835a; }
+  .kpi-card.good { border-left-color: #0ca30c; }
+  section { background: #fff; border-radius: 14px; padding: 1.5rem 1.7rem; margin-bottom: 1.8rem; box-shadow: 0 1px 3px rgba(20,20,43,0.08); }
+  section h2 { margin-top: 0; font-size: 1.15rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid #eef0f5; }
+  th { color: #6b7280; font-weight: 600; text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.03em; }
+  .badge { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
+  .badge.Critical { background: #fbe4e4; color: #d03b3b; }
+  .badge.High { background: #fce8e0; color: #ec835a; }
+  .badge.Medium { background: #fef3dc; color: #ab7c00; }
+  .badge.Low { background: #e1f5e1; color: #0ca30c; }
+  .risk-bar-row { display: flex; align-items: center; gap: 0.7rem; margin-bottom: 0.5rem; }
+  .risk-bar-label { width: 90px; font-size: 0.85rem; }
+  .risk-bar-track { flex: 1; background: #eef0f5; border-radius: 6px; height: 14px; overflow: hidden; }
+  .risk-bar-fill { height: 100%; border-radius: 6px; }
+  .instructions ol { margin: 0; padding-left: 1.2rem; }
+  .instructions li { margin-bottom: 0.4rem; }
+  footer { color: #9aa1ac; font-size: 0.8rem; text-align: center; margin-top: 2rem; }
+</style>
+</head>
+<body>
+  <h1>Boon Academy Intervention Command Center</h1>
+  <div class="subtitle">Day 14 rescue plan — Quiz 2 in 6 days</div>
+
+  <div class="kpi-grid">
+    <div class="kpi-card"><div class="label">Total students</div><div class="value">200</div></div>
+    <div class="kpi-card high"><div class="label">Below target</div><div class="value">199</div></div>
+    <div class="kpi-card critical"><div class="label">Baseline intervention rate</div><div class="value">29%</div></div>
+    <div class="kpi-card good"><div class="label">System coverage (human-touch)</div><div class="value">36%</div></div>
+    <div class="kpi-card critical"><div class="label">Critical + High students</div><div class="value">38</div></div>
+    <div class="kpi-card"><div class="label">Est. facilitator workload</div><div class="value">765 min</div></div>
+  </div>
+
+  <section>
+    <h2>Risk distribution</h2>
+    
+    <div class="risk-bar-row">
+      <div class="risk-bar-label">Critical (28)</div>
+      <div class="risk-bar-track"><div class="risk-bar-fill" style="width: 14.000000000000002%; background: #d03b3b;"></div></div>
+    </div>
+    
+    <div class="risk-bar-row">
+      <div class="risk-bar-label">High (10)</div>
+      <div class="risk-bar-track"><div class="risk-bar-fill" style="width: 5.0%; background: #ec835a;"></div></div>
+    </div>
+    
+    <div class="risk-bar-row">
+      <div class="risk-bar-label">Medium (35)</div>
+      <div class="risk-bar-track"><div class="risk-bar-fill" style="width: 17.5%; background: #fab219;"></div></div>
+    </div>
+    
+    <div class="risk-bar-row">
+      <div class="risk-bar-label">Low (127)</div>
+      <div class="risk-bar-track"><div class="risk-bar-fill" style="width: 63.5%; background: #0ca30c;"></div></div>
+    </div>
+    
+  </section>
+
+  <section>
+    <h2>Facilitator workload (Critical + High students)</h2>
+    <table>
+      <tr><th>Facilitator</th><th>Students needing action today/24h</th><th>Estimated minutes</th></tr>
+      
+      <tr><td>facilitator8@noon.com</td><td>8</td><td>150</td></tr>
+      
+      <tr><td>facilitator7@noon.com</td><td>5</td><td>100</td></tr>
+      
+      <tr><td>facilitator3@noon.com</td><td>6</td><td>90</td></tr>
+      
+      <tr><td>facilitator4@noon.com</td><td>5</td><td>90</td></tr>
+      
+      <tr><td>facilitator6@noon.com</td><td>5</td><td>90</td></tr>
+      
+      <tr><td>facilitator2@noon.com</td><td>4</td><td>60</td></tr>
+      
+      <tr><td>facilitator5@noon.com</td><td>3</td><td>50</td></tr>
+      
+      <tr><td>facilitator1@noon.com</td><td>2</td><td>30</td></tr>
+      
+    </table>
+  </section>
+
+  <section>
+    <h2>Top urgent students</h2>
+    <table>
+      <tr><th>Student</th><th>Campus</th><th>Facilitator</th><th>Risk</th><th>Score</th><th>Quiz 1</th><th>Target</th><th>Action</th></tr>
+      
+      <tr>
+        <td>Khalid Al-Zahrani</td>
+        <td>C05</td>
+        <td>facilitator8@noon.com</td>
+        <td><span class="badge Critical">Critical</span></td>
+        <td>78.8</td>
+        <td>9</td>
+        <td>12</td>
+        <td>parent_call_plus_tutoring</td>
+      </tr>
+      
+      <tr>
+        <td>Layla Al-Mutairi</td>
+        <td>C05</td>
+        <td>facilitator8@noon.com</td>
+        <td><span class="badge Critical">Critical</span></td>
+        <td>77.5</td>
+        <td>11</td>
+        <td>14</td>
+        <td>parent_call_plus_tutoring</td>
+      </tr>
+      
+      <tr>
+        <td>Maryam Al-Mansour</td>
+        <td>C05</td>
+        <td>facilitator8@noon.com</td>
+        <td><span class="badge Critical">Critical</span></td>
+        <td>76.6</td>
+        <td>13</td>
+        <td>16</td>
+        <td>parent_call_plus_tutoring</td>
+      </tr>
+      
+      <tr>
+        <td>Ahmad Al-Dossari</td>
+        <td>C05</td>
+        <td>facilitator8@noon.com</td>
+        <td><span class="badge Critical">Critical</span></td>
+        <td>75.8</td>
+        <td>20</td>
+        <td>24</td>
+        <td>parent_call_plus_tutoring</td>
+      </tr>
+      
+      <tr>
+        <td>Layla Al-Khaldi</td>
+        <td>C05</td>
+        <td>facilitator8@noon.com</td>
+        <td><span class="badge Critical">Critical</span></td>
+        <td>75.8</td>
+        <td>15</td>
+        <td>18</td>
+        <td>parent_call_plus_tutoring</td>
+      </tr>
+      
+      <tr>
+        <td>Amal Al-Salem</td>
+        <td>C04</td>
+        <td>facilitator7@noon.com</td>
+        <td><span class="badge Critical">Critical</span></td>
+        <td>75.6</td>
+        <td>21</td>
+        <td>25</td>
+        <td>parent_call_plus_tutoring</td>
+      </tr>
+      
+      <tr>
+        <td>Amal Al-Subai</td>
+        <td>C04</td>
+        <td>facilitator6@noon.com</td>
+        <td><span class="badge Critical">Critical</span></td>
+        <td>75.2</td>
+        <td>23</td>
+        <td>27</td>
+        <td>parent_call_plus_tutoring</td>
+      </tr>
+      
+      <tr>
+        <td>Ahmad Al-Anzi</td>
+        <td>C04</td>
+        <td>facilitator7@noon.com</td>
+        <td><span class="badge Critical">Critical</span></td>
+        <td>75.2</td>
+        <td>23</td>
+        <td>27</td>
+        <td>parent_call_plus_tutoring</td>
+      </tr>
+      
+      <tr>
+        <td>Nora Al-Saud</td>
+        <td>C05</td>
+        <td>facilitator8@noon.com</td>
+        <td><span class="badge Critical">Critical</span></td>
+        <td>75.2</td>
+        <td>17</td>
+        <td>20</td>
+        <td>parent_call_plus_tutoring</td>
+      </tr>
+      
+      <tr>
+        <td>Abdullah Al-Otaibi</td>
+        <td>C05</td>
+        <td>facilitator8@noon.com</td>
+        <td><span class="badge Critical">Critical</span></td>
+        <td>75.0</td>
+        <td>18</td>
+        <td>21</td>
+        <td>parent_call_plus_tutoring</td>
+      </tr>
+      
+    </table>
+  </section>
+
+  <section class="instructions">
+    <h2>Instructions for facilitators</h2>
+    <ol>
+      <li>Open <code>facilitator_worklists.csv</code> or the Streamlit app and filter to your email.</li>
+      <li>Work Critical students first — same-day parent call plus a booked tutoring slot before Quiz 2.</li>
+      <li>Use the pre-drafted parent script and student message as a starting point, not a script to read verbatim.</li>
+      <li>Log the outcome as a facilitator note so tomorrow's run reflects the intervention you just made.</li>
+    </ol>
+  </section>
+
+  <footer>Generated by the Boon Academy Intervention Command Center pipeline — Day 14.</footer>
+</body>
+</html>

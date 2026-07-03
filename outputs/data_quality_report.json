@@ -1,0 +1,12 @@
+{
+  "total_issues": 1,
+  "issues": [
+    {
+      "check": "missing_attendance_filled_zero",
+      "severity": "info",
+      "count": 3,
+      "detail": "session_attended_min was missing; filled with 0 for risk scoring"
+    }
+  ],
+  "students_scored": 200
+}
