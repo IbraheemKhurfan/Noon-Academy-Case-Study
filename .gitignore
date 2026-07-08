@@ -4,3 +4,7 @@ __pycache__/
 .env
 .DS_Store
 .pytest_cache/
+.cache/
+*.db
+Dataset/
+~$*.docx

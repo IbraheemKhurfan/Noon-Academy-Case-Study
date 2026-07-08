@@ -1,0 +1,53 @@
+<mxfile host="app.diagrams.net" modified="2026-01-01T00:00:00.000Z" agent="boon-academy" version="24.0.0">
+  <diagram name="Boon Academy Architecture" id="boon-arch-1">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1520" pageHeight="960" math="0" shadow="0">
+      <root>
+<mxCell id="0" />
+<mxCell id="1" parent="0" />
+<mxCell id="2" value="student_daily_metrics.csv" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#cde2fb;strokeColor=#2a78d6;fontColor=#0b0b0b;" vertex="1" parent="1"><mxGeometry x="60" y="70" width="440" height="60" as="geometry" /></mxCell>
+<mxCell id="3" value="facilitator_notes.csv" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#cde2fb;strokeColor=#2a78d6;fontColor=#0b0b0b;" vertex="1" parent="1"><mxGeometry x="540" y="70" width="440" height="60" as="geometry" /></mxCell>
+<mxCell id="4" value="student_metadata.csv" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#cde2fb;strokeColor=#2a78d6;fontColor=#0b0b0b;" vertex="1" parent="1"><mxGeometry x="1020" y="70" width="440" height="60" as="geometry" /></mxCell>
+<mxCell id="5" value="main.py — seed_from_csv() + recompute_all()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#c98500;fontColor=#c98500;dashed=1;verticalAlign=top;align=left;spacingLeft=10;spacingTop=6;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="30" y="165" width="1440" height="400" as="geometry" /></mxCell>
+<mxCell id="6" value="src/data.py
+CSV Ingest" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#52514e;fontColor=#0b0b0b;" vertex="1" parent="1"><mxGeometry x="150" y="200" width="350" height="65" as="geometry" /></mxCell>
+<mxCell id="7" value="src/validation.py
+Data-Quality Checks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#52514e;fontColor=#0b0b0b;" vertex="1" parent="1"><mxGeometry x="540" y="200" width="350" height="65" as="geometry" /></mxCell>
+<mxCell id="8" value="data_quality_report.json" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f2f1ee;strokeColor=#898781;fontColor=#52514e;dashed=1;" vertex="1" parent="1"><mxGeometry x="930" y="200" width="440" height="65" as="geometry" /></mxCell>
+<mxCell id="9" value="src/features.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#52514e;fontColor=#0b0b0b;" vertex="1" parent="1"><mxGeometry x="60" y="305" width="320" height="65" as="geometry" /></mxCell>
+<mxCell id="10" value="src/patterns.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#52514e;fontColor=#0b0b0b;" vertex="1" parent="1"><mxGeometry x="410" y="305" width="320" height="65" as="geometry" /></mxCell>
+<mxCell id="11" value="src/scoring.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#52514e;fontColor=#0b0b0b;" vertex="1" parent="1"><mxGeometry x="760" y="305" width="320" height="65" as="geometry" /></mxCell>
+<mxCell id="12" value="src/actions.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#52514e;fontColor=#0b0b0b;" vertex="1" parent="1"><mxGeometry x="1110" y="305" width="320" height="65" as="geometry" /></mxCell>
+<mxCell id="13" value="src/llm.py — LLM Gateway" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ece7fb;strokeColor=#4a3aa7;fontColor=#0b0b0b;" vertex="1" parent="1"><mxGeometry x="410" y="415" width="320" height="55" as="geometry" /></mxCell>
+<mxCell id="14" value="OpenAI / Groq API" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eeeeee;strokeColor=#898781;fontColor=#52514e;dashed=1;" vertex="1" parent="1"><mxGeometry x="410" y="485" width="320" height="50" as="geometry" /></mxCell>
+<mxCell id="15" value="SQLite Database  (src/db.py)
+users · campuses · students · daily_metrics · facilitator_notes
+risk_snapshots · interventions · availability_slots · notifications" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d9f2ea;strokeColor=#1baf7a;fontColor=#0b0b0b;" vertex="1" parent="1"><mxGeometry x="30" y="585" width="1000" height="110" as="geometry" /></mxCell>
+<mxCell id="16" value="outputs/
+roster · worklists · dashboards
+parent reports · run_summary.json" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f2f1ee;strokeColor=#898781;fontColor=#52514e;dashed=1;" vertex="1" parent="1"><mxGeometry x="1060" y="585" width="410" height="110" as="geometry" /></mxCell>
+<mxCell id="17" value="app.py — Streamlit Web App
+My Day · My Students · Student Detail · Actions · Parent Calls · Calendar · Data Entry · Admin" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dbe9fb;strokeColor=#2a78d6;fontColor=#0b0b0b;" vertex="1" parent="1"><mxGeometry x="30" y="725" width="1440" height="70" as="geometry" /></mxCell>
+<mxCell id="18" value="Facilitator (browser)" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#f2f1ee;strokeColor=#52514e;fontColor=#0b0b0b;" vertex="1" parent="1"><mxGeometry x="350" y="825" width="380" height="65" as="geometry" /></mxCell>
+<mxCell id="19" value="Admin (browser)" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#f2f1ee;strokeColor=#52514e;fontColor=#0b0b0b;" vertex="1" parent="1"><mxGeometry x="800" y="825" width="380" height="65" as="geometry" /></mxCell>
+<mxCell id="20" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;fontStyle=2;" edge="1" parent="1" source="2" target="6"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="21" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;fontStyle=2;" edge="1" parent="1" source="3" target="6"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="22" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;fontStyle=2;" edge="1" parent="1" source="4" target="6"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="23" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;fontStyle=2;" edge="1" parent="1" source="6" target="7"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="24" value="writes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;fontStyle=2;" edge="1" parent="1" source="7" target="8"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="25" value="clean data" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;fontStyle=2;" edge="1" parent="1" source="7" target="9"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="26" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;fontStyle=2;" edge="1" parent="1" source="9" target="10"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="27" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;fontStyle=2;" edge="1" parent="1" source="10" target="11"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="28" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;fontStyle=2;" edge="1" parent="1" source="11" target="12"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="29" value="trusted notes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;fontStyle=2;" edge="1" parent="1" source="7" target="13"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="30" value="structured severity" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;fontStyle=2;" edge="1" parent="1" source="13" target="11"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="31" value="cache -&gt; call -&gt; retry -&gt; fallback" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=classic;fontStyle=2;" edge="1" parent="1" source="13" target="14"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="32" value="persists risk_snapshots &amp; interventions" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;fontStyle=2;" edge="1" parent="1" source="5" target="15"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="33" value="run_pipeline() writes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;fontStyle=2;" edge="1" parent="1" source="5" target="16"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="34" value="reads / writes via src/db.py" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=classic;fontStyle=2;" edge="1" parent="1" source="15" target="17"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="35" value="browser" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=classic;fontStyle=2;" edge="1" parent="1" source="17" target="18"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="36" value="browser" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=classic;fontStyle=2;" edge="1" parent="1" source="17" target="19"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="37" value="calls recompute_all() after every facilitator action" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;strokeColor=#d03b3b;fontColor=#d03b3b;dashed=1;fontStyle=2;exitX=1;exitY=0.2;entryX=1;entryY=0.8;" edge="1" parent="1" source="17" target="5"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

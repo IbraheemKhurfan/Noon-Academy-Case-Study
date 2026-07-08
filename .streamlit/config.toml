@@ -1,0 +1,24 @@
+# Present so a fresh machine's first `streamlit run` never blocks on the
+# interactive "Welcome to Streamlit" email prompt (it hangs `make demo`
+# with no TTY attached). headless=true also skips auto-opening a browser
+# tab, since the app may be launched on a remote/server environment.
+[browser]
+gatherUsageStats = false
+
+[server]
+headless = true
+
+# Dark theme, tokens derived from analyzing motion.dev's real computed
+# styles (warm near-black charcoal, not pure black; muted sage-gray
+# secondary text) — see src/config.py's DARK_* constants for the full
+# palette and the reasoning for keeping our own accent blue instead of
+# their signature yellow (which would collide with our "Medium risk"
+# status color). Every widget (buttons, tabs, sliders, radio) picks this
+# up automatically so nothing needs hand-styling just to look consistent.
+[theme]
+base = "dark"
+primaryColor = "#3987e5"
+backgroundColor = "#0b0f0e"
+secondaryBackgroundColor = "#141a18"
+textColor = "#ededec"
+font = "sans serif"

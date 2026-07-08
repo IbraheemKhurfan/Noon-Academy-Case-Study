@@ -1,0 +1,57 @@
+{
+  "generated_at": "2026-07-08T21:47:33.618009+00:00",
+  "config": {
+    "data_dir": "data",
+    "output_dir": "outputs",
+    "as_of_date": "2025-10-14",
+    "quiz1_date": "2025-10-10",
+    "quiz2_date": "2025-10-20",
+    "llm_enabled": true,
+    "openai_model": "llama-3.3-70b-versatile",
+    "notification_mode": "dry_run"
+  },
+  "stats": {
+    "generated_at": "2026-07-08T21:47:33.618009+00:00",
+    "as_of_day": 14,
+    "days_until_quiz2": 6,
+    "total_students": 200,
+    "total_campuses": 5,
+    "total_facilitators": 8,
+    "below_target_count": 199,
+    "below_target_pct": 99.5,
+    "post_quiz_activity_pct": 13.5,
+    "risk_counts": {
+      "Low": 128,
+      "Medium": 60,
+      "High": 11,
+      "Critical": 1
+    },
+    "recommended_action_count": 200,
+    "llm_success_count": 35,
+    "llm_fallback_count": 0,
+    "data_quality_issue_count": 5,
+    "students_with_quality_flags": 51,
+    "students_needing_intervention": 200,
+    "recommendation_coverage": 100.0,
+    "contact_attempt_rate": 0.5,
+    "successful_interaction_rate": 0.5,
+    "completed_intervention_rate": 0.5,
+    "overdue_intervention_rate": 0.0,
+    "projected_coverage": 27.0,
+    "successful_interaction_count": 1,
+    "target_count": 160,
+    "additional_students_needed": 159
+  },
+  "output_files": [
+    "data_quality_report.json",
+    "student_risk_roster.csv",
+    "facilitator_worklists.csv",
+    "intervention_actions.csv",
+    "pattern_summary.csv",
+    "llm_messages.jsonl",
+    "executive_summary.md",
+    "facilitator_dashboard.html",
+    "run_summary.json",
+    "parent_reports/"
+  ]
+}

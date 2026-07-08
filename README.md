@@ -1,28 +1,27 @@
 # Boon Academy Intervention Command Center
 
-Turns messy daily attendance/practice/quiz/note data into a prioritized, workload-capped facilitator worklist so intervention coverage moves from ~30% to 80%+ before Quiz 2.
+Helps facilitators find, prioritize, and track student interventions before
+Quiz 2 — turning documented coverage from ~30% toward an 80% target.
 
-## Setup
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-cp .env.example .env   # edit if your data lives elsewhere or you have an OpenAI key
+**Prerequisites:** Python 3.11+, `make`.
+
+**Setup:**
+```
+cp .env.example .env   # edit OPENAI_API_KEY to enable real LLM calls (optional)
+make demo               # installs deps, runs the full pipeline, launches the app
 ```
 
-## Environment variables (see `.env.example`)
-`DATA_DIR`, `OUTPUT_DIR`, `LLM_ENABLED`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `APP_PORT`
+**Other commands:**
+- `make pipeline` — run the data/risk/output pipeline only (no UI)
+- `make test` — run the pytest suite
+- `make reset` — clear the database and generated outputs
 
-## Run the pipeline
-```bash
-make demo
-```
-Installs dependencies, runs ingest → validate → features → risk → actions → outputs, and prints a summary. Works with `LLM_ENABLED=false` (deterministic templates) or `true` + a real `OPENAI_API_KEY`.
+**App URL:** http://localhost:8501
 
-## Launch the app
-```bash
-streamlit run app.py
-```
+**Outputs:** generated in `outputs/` (roster, worklists, dashboard, parent reports, etc.)
 
-## Outputs (`outputs/`)
-`student_risk_roster.csv`, `facilitator_worklists.csv`, `intervention_actions.csv`, `executive_summary.md`, `data_quality_report.json`, `facilitator_dashboard.html`, `llm_messages.jsonl`
+**Demo credentials** (from `.env`, created on first pipeline run):
+- Admin: `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` (default `admin@boonacademy.demo` / `Admin@2025`)
+- Facilitator: any `facilitator*@noon.com` from `data/student_metadata.csv` / `SEED_FACILITATOR_PASSWORD` (default `Coach@2025`)
 
 Loom walkthrough: <ADD LINK HERE>

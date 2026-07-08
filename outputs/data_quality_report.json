@@ -1,12 +1,69 @@
 {
-  "total_issues": 1,
-  "issues": [
+  "row_counts": {
+    "student_metadata": 200,
+    "daily_metrics": 2000,
+    "facilitator_notes": 180
+  },
+  "total_issue_checks": 5,
+  "total_flagged_rows": 110,
+  "students_with_quality_flags": 51,
+  "checks": [
     {
-      "check": "missing_attendance_filled_zero",
+      "check": "invalid_parent_phone",
+      "severity": "warning",
+      "count": 1,
+      "description": "parent_phone does not look like a phone number (e.g. contains an email address).",
+      "sample_student_ids": [
+        "S098"
+      ]
+    },
+    {
+      "check": "missing_attendance",
       "severity": "info",
       "count": 3,
-      "detail": "session_attended_min was missing; filled with 0 for risk scoring"
+      "description": "session_attended_min is missing (kept as missing, not treated as zero).",
+      "sample_student_ids": [
+        "S012",
+        "S042",
+        "S145"
+      ]
+    },
+    {
+      "check": "extreme_practice_value",
+      "severity": "info",
+      "count": 3,
+      "description": "practice_questions above 60 in a single day — kept, flagged as an anomaly (may be a real cramming burst).",
+      "sample_student_ids": [
+        "S051",
+        "S163"
+      ]
+    },
+    {
+      "check": "unexpected_quiz_score_date",
+      "severity": "warning",
+      "count": 1,
+      "description": "A quiz score is recorded before Quiz 1's date (2025-10-10).",
+      "sample_student_ids": [
+        "S042"
+      ]
+    },
+    {
+      "check": "facilitator_ownership_mismatch",
+      "severity": "warning",
+      "count": 102,
+      "description": "Note's facilitator_email does not match the student's assigned facilitator in student_metadata. Retained, but excluded from parent communication and qualitative risk contribution until trusted.",
+      "sample_student_ids": [
+        "S007",
+        "S012",
+        "S013",
+        "S015",
+        "S019",
+        "S033",
+        "S035",
+        "S038",
+        "S039",
+        "S049"
+      ]
     }
-  ],
-  "students_scored": 200
+  ]
 }

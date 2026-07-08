@@ -1,122 +1,58 @@
-"""Tests for the deterministic risk model in src/risk.py.
-
-These call `score_student` directly with plain dicts rather than going
-through the full pipeline — risk scoring is meant to be testable in
-isolation from ingestion/features, which is the whole point of keeping it
-rule-based (see the module docstring in src/risk.py).
-"""
-
-from __future__ import annotations
-
-from src.risk import score_student
-
-# A typical cohort's recent-practice distribution, used for every test so
-# percentile-based scoring (recent_practice_points) is comparable across cases.
-COHORT_P25 = 10.0
-COHORT_MEDIAN = 20.0
+"""Risk scoring is a deterministic weighted rule system (see src/scoring.py
+for why: there are no Quiz 2 outcomes yet to train a model against)."""
+from src.features import _safe_mean, _trailing_zero_streak
+from src.patterns import detect_patterns
+from src.scoring import score_student
+from tests.test_patterns import base_features
 
 
-def _student(**overrides) -> dict:
-    """A reasonably healthy baseline student; tests override just the
-    fields relevant to what they're checking."""
-    base = {
-        "quiz1_score": 85.0,
-        "target_score": 80.0,
-        "below_target": False,
-        "missing_quiz_score": False,
-        "missing_target_score": False,
-        "recent_attendance_min": 180.0,
-        "recent_practice_questions": 25.0,
-        "has_post_quiz_intervention": True,
-        "learning_track": "Standard",
-        "total_attendance_min": 800.0,
-        "total_practice_questions": 150.0,
-    }
-    base.update(overrides)
-    return base
-
-
-def test_low_quiz_low_attendance_no_practice_scores_higher_than_healthy_student():
-    """The core promise of the model: a student who bombed Quiz 1, stopped
-    attending, and stopped practicing must outrank a student who is fine."""
-    struggling = _student(
-        quiz1_score=32.0,
-        target_score=80.0,
-        below_target=True,
-        recent_attendance_min=10.0,
-        recent_practice_questions=0.0,
-        has_post_quiz_intervention=False,
-        learning_track="Remedial",
+def test_severe_dropout_ranks_above_stable_student():
+    dropout = base_features(
+        baseline_attendance=85.0, recent_attendance=15.0, attendance_trend=-70.0,
+        baseline_practice=18.0, recent_practice=2.0, practice_trend=-16.0,
+        zero_practice_streak=4, gap_to_target=15.0, quiz1_score=65.0,
+        post_quiz1_note_count=0, intervention_count=0, last_note_follow_up_needed=None,
     )
-    healthy = _student()
+    stable = base_features(gap_to_target=3.0, quiz1_score=77.0)
 
-    struggling_result = score_student(struggling, COHORT_P25, COHORT_MEDIAN)
-    healthy_result = score_student(healthy, COHORT_P25, COHORT_MEDIAN)
+    dropout_patterns = [p["code"] for p in detect_patterns(dropout)]
+    stable_patterns = [p["code"] for p in detect_patterns(stable)]
 
-    assert struggling_result["risk_score"] > healthy_result["risk_score"]
-    assert struggling_result["risk_level"] == "Critical"
-    assert "LOW_QUIZ_SCORE" in struggling_result["reason_codes"]
-    assert "LOW_RECENT_ATTENDANCE" in struggling_result["reason_codes"]
-    assert "NO_RECENT_PRACTICE" in struggling_result["reason_codes"]
+    dropout_score = score_student(dropout, dropout_patterns, [])
+    stable_score = score_student(stable, stable_patterns, [])
+
+    assert dropout_score["risk_score"] > stable_score["risk_score"]
+    assert dropout_score["risk_level"] in ("Critical", "High")
 
 
-def test_below_target_but_active_student_does_not_become_critical():
-    """A student who missed their (ambitious) target by a little, but is
-    still attending fully and practicing above the cohort median, should
-    read as Low/Medium risk — not Critical. This is what lets the system
-    route them to an automated nudge instead of consuming facilitator time."""
-    active_student = _student(
-        quiz1_score=76.0,
-        target_score=80.0,
-        below_target=True,
-        recent_attendance_min=180.0,
-        recent_practice_questions=30.0,
-        has_post_quiz_intervention=True,
-    )
-
-    result = score_student(active_student, COHORT_P25, COHORT_MEDIAN)
-
+def test_stable_student_slightly_below_target_is_not_automatically_critical():
+    stable = base_features(gap_to_target=3.0, quiz1_score=77.0)
+    patterns = [p["code"] for p in detect_patterns(stable)]
+    result = score_student(stable, patterns, [])
     assert result["risk_level"] != "Critical"
-    assert result["risk_score"] < 30  # stays in the Low band
 
 
-def test_missing_quiz_score_is_flagged_and_boosts_risk_without_crashing():
-    """A student with no recorded Quiz 1 score must not crash scoring (no
-    NaN comparisons blowing up) and must be flagged as operationally
-    invisible rather than silently scoring as low-risk."""
-    invisible_student = _student(
-        quiz1_score=None,
-        target_score=80.0,
-        below_target=False,
-        missing_quiz_score=True,
+def test_risk_score_always_within_0_100():
+    extreme = base_features(
+        baseline_attendance=90.0, recent_attendance=0.0, attendance_trend=-90.0,
+        baseline_practice=30.0, recent_practice=0.0, practice_trend=-30.0,
+        zero_practice_streak=10, gap_to_target=80.0, quiz1_score=0.0,
+        post_quiz1_note_count=0, intervention_count=0,
     )
-
-    result = score_student(invisible_student, COHORT_P25, COHORT_MEDIAN)
-
-    assert "MISSING_QUIZ_SCORE" in result["reason_codes"]
-    assert result["risk_breakdown"]["missing_data_points"] > 0
-
-
-def test_no_post_quiz_intervention_only_penalizes_below_target_students():
-    on_target_no_note = _student(below_target=False, has_post_quiz_intervention=False)
-    below_target_no_note = _student(
-        quiz1_score=60.0, target_score=80.0, below_target=True, has_post_quiz_intervention=False
-    )
-
-    on_target_result = score_student(on_target_no_note, COHORT_P25, COHORT_MEDIAN)
-    below_target_result = score_student(below_target_no_note, COHORT_P25, COHORT_MEDIAN)
-
-    assert on_target_result["risk_breakdown"]["no_intervention_points"] == 0
-    assert below_target_result["risk_breakdown"]["no_intervention_points"] > 0
-    assert "NO_POST_QUIZ_INTERVENTION" in below_target_result["reason_codes"]
+    patterns = [p["code"] for p in detect_patterns(extreme)]
+    result = score_student(extreme, patterns,
+                            [{"severity": "critical", "follow_up_needed": True}])
+    assert 0 <= result["risk_score"] <= 100
+    assert 0 <= result["priority_score"] <= 100
 
 
-def test_remedial_track_adds_a_fixed_point_bump():
-    standard = _student(learning_track="Standard")
-    remedial = _student(learning_track="Remedial")
+def test_missing_attendance_is_not_treated_as_zero_in_feature_averages():
+    # None values must be dropped from the mean, not counted as 0 minutes.
+    values = [60.0, None, 80.0]
+    import pandas as pd
+    assert _safe_mean(pd.Series(values)) == 70.0  # (60+80)/2, not (60+0+80)/3
 
-    standard_result = score_student(standard, COHORT_P25, COHORT_MEDIAN)
-    remedial_result = score_student(remedial, COHORT_P25, COHORT_MEDIAN)
 
-    assert remedial_result["risk_score"] - standard_result["risk_score"] == 5
-    assert "REMEDIAL_TRACK" in remedial_result["reason_codes"]
+def test_trailing_zero_streak_stops_at_missing_value():
+    assert _trailing_zero_streak([5, 0, 0, None]) == 0  # trailing value is unknown, not zero
+    assert _trailing_zero_streak([5, 0, 0, 0]) == 3

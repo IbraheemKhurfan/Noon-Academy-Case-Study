@@ -1,126 +1,119 @@
-"""Turn a risk score into a concrete, assignable action.
-
-Two-pass design: (1) deterministic templates decide *what* to do and *how
-urgently* purely from `risk_level` — this always works, with or without an
-LLM, and is what makes the system usable the moment `make demo` finishes.
-(2) `src/llm.py` then rewrites the human-facing text (facilitator brief,
-parent script, student message) to be warmer and note-aware. If the LLM is
-unavailable, its own fallback templates are used instead, so the roster
-never ships with empty message fields.
+"""Maps detected patterns + risk level to a single practical recommended
+action. Purely rule-based — the LLM is never involved in deciding *what* to
+do, only in *how to phrase* the communication once an action is chosen.
 """
-
 from __future__ import annotations
 
-from pathlib import Path
+from datetime import date, timedelta
+from typing import Any
 
-import pandas as pd
-
-from src.config import Settings
-from src.llm import build_student_context, get_llm_response
-
-# --- tier -> action policy, per the case brief --------------------------
-ACTION_POLICY = {
-    "Critical": {
-        "recommended_action": "parent_call_plus_tutoring",
-        "sla": "Today",
-        "human_effort": "High",
-        "estimated_minutes": 20,
-        "channel": "call",
-    },
-    "High": {
-        "recommended_action": "parent_call_or_voice_note",
-        "sla": "Within 24 hours",
-        "human_effort": "Medium",
-        "estimated_minutes": 10,
-        "channel": "call",
-    },
-    "Medium": {
-        "recommended_action": "student_checkin_plus_practice_plan",
-        "sla": "Within 48 hours",
-        "human_effort": "Low",
-        "estimated_minutes": 3,
-        "channel": "whatsapp",
-    },
-    "Low": {
-        "recommended_action": "automated_motivation_message",
-        "sla": "Automated today",
-        "human_effort": "None",
-        "estimated_minutes": 0,
-        "channel": "automated",
-    },
+ACTION_META = {
+    "PARENT_CALL": {"sla_hours": 24, "effort_min": 15,
+                     "label": "Call the parent",
+                     "next_step": "Call the parent today; if unreachable, send WhatsApp and try again within 24h."},
+    "STUDENT_CHECK_IN": {"sla_hours": 48, "effort_min": 10,
+                          "label": "Student check-in",
+                          "next_step": "Have a short 1:1 chat before/after the next session to understand the barrier."},
+    "MOTIVATIONAL_MESSAGE": {"sla_hours": 48, "effort_min": 5,
+                              "label": "Send a motivational message",
+                              "next_step": "Send a short motivational nudge; no heavy intervention needed."},
+    "PRACTICE_PLAN": {"sla_hours": 48, "effort_min": 15,
+                       "label": "Build a practice plan",
+                       "next_step": "Agree on a small daily practice target (e.g. 10 questions) and check in tomorrow."},
+    "ONE_TO_ONE_TUTORING": {"sla_hours": 72, "effort_min": 45,
+                             "label": "Book 1-on-1 tutoring",
+                             "next_step": "Book a focused tutoring slot on the weak topic before Quiz 2."},
+    "STUDY_PLANNING": {"sla_hours": 72, "effort_min": 20,
+                        "label": "Build a study plan",
+                        "next_step": "Help spread practice across the remaining days instead of one burst."},
+    "ATTENDANCE_FOLLOW_UP": {"sla_hours": 24, "effort_min": 10,
+                              "label": "Attendance follow-up",
+                              "next_step": "Confirm attendance for the next session and note the reason for the gap."},
+    "DATA_REVIEW": {"sla_hours": 48, "effort_min": 10,
+                     "label": "Review the data",
+                     "next_step": "Verify the missing/odd data point with the facilitator before acting on it."},
+    "MONITOR_ONLY": {"sla_hours": 168, "effort_min": 2,
+                      "label": "Monitor only",
+                      "next_step": "No action needed now — keep monitoring."},
+    "POSITIVE_REINFORCEMENT": {"sla_hours": 72, "effort_min": 5,
+                                "label": "Positive reinforcement",
+                                "next_step": "Acknowledge the improvement; keep momentum with light encouragement."},
 }
 
-
-def _base_facilitator_brief(row: pd.Series, days_to_quiz2: int) -> str:
-    quiz = row.get("quiz1_score")
-    target = row.get("target_score")
-    gap_txt = (
-        f"scored {quiz:.0f} vs target {target:.0f}"
-        if pd.notna(quiz) and pd.notna(target)
-        else "has no recorded Quiz 1 score"
-    )
-    return (
-        f"{row['student_name']} is {row['risk_level']} risk ({gap_txt}, "
-        f"{days_to_quiz2} days to Quiz 2). Reasons: {', '.join(row['reason_codes']) or 'n/a'}."
-    )
+# A parent call is disruptive and should be reserved for genuinely severe
+# situations, not handed out to every student below target (section 21).
+PARENT_CALL_PATTERNS = {"ACUTE_ATTENDANCE_DROP", "CHRONIC_LOW_ATTENDANCE", "NO_POST_QUIZ_INTERVENTION", "UNRESOLVED_FOLLOW_UP"}
 
 
-def _base_parent_script(row: pd.Series, days_to_quiz2: int) -> str:
-    return (
-        f"Hi, this is {row['facilitator_email'].split('@')[0]} from Boon Academy calling about "
-        f"{row['student_name']}. We'd like to talk through how we can support {row['student_name']} "
-        f"together before Quiz 2 in {days_to_quiz2} days."
-    )
+def qualifies_for_parent_call(pattern_codes: set[str], risk_level: str, f: dict) -> bool:
+    if risk_level == "Critical" and (pattern_codes & PARENT_CALL_PATTERNS or f.get("zero_attendance_streak", 0) >= 2
+                                      or f.get("has_overdue_intervention")):
+        return True
+    if risk_level == "High" and "ACUTE_ATTENDANCE_DROP" in pattern_codes:
+        return True
+    return False
 
 
-def _base_student_message(row: pd.Series) -> str:
-    return (
-        f"Hey {row['student_name']}, you've got this! Let's lock in a short daily practice "
-        f"habit this week and head into Quiz 2 feeling ready."
-    )
+def _pick_primary_pattern(patterns: list[dict], code: str) -> dict | None:
+    return next((p for p in patterns if p["code"] == code), None)
 
 
-def _base_next_best_step(row: pd.Series) -> str:
-    policy = ACTION_POLICY[row["risk_level"]]
-    return f"{policy['recommended_action'].replace('_', ' ').title()} — {policy['sla']}"
+def recommend_action(f: dict, patterns: list[dict], risk_level: str, as_of: date) -> dict[str, Any]:
+    codes = {p["code"] for p in patterns}
+    parent_call_ok = qualifies_for_parent_call(codes, risk_level, f)
 
+    action_type = "MONITOR_ONLY"
+    primary_pattern = None
 
-def generate_actions(
-    df: pd.DataFrame, settings: Settings, llm_log_path: Path
-) -> pd.DataFrame:
-    """Add action-plan and messaging columns to the scored roster."""
-    df = df.copy()
-    days_to_quiz2 = settings.quiz2_day - settings.current_day
+    if ("ACUTE_ATTENDANCE_DROP" in codes or "CHRONIC_LOW_ATTENDANCE" in codes):
+        primary_pattern = _pick_primary_pattern(patterns, "ACUTE_ATTENDANCE_DROP") or _pick_primary_pattern(patterns, "CHRONIC_LOW_ATTENDANCE")
+        action_type = "PARENT_CALL" if parent_call_ok else "ATTENDANCE_FOLLOW_UP"
+    elif "ATTENDING_BUT_NOT_PRACTICING" in codes:
+        primary_pattern = _pick_primary_pattern(patterns, "ATTENDING_BUT_NOT_PRACTICING")
+        action_type = "STUDENT_CHECK_IN"
+    elif "PRACTICE_COLLAPSE" in codes or "ZERO_PRACTICE_STREAK" in codes:
+        primary_pattern = _pick_primary_pattern(patterns, "PRACTICE_COLLAPSE") or _pick_primary_pattern(patterns, "ZERO_PRACTICE_STREAK")
+        action_type = "PRACTICE_PLAN"
+    elif "CRAMMING_PATTERN" in codes:
+        primary_pattern = _pick_primary_pattern(patterns, "CRAMMING_PATTERN")
+        action_type = "STUDY_PLANNING"
+    elif "POSSIBLE_MISSED_ASSESSMENT" in codes:
+        primary_pattern = _pick_primary_pattern(patterns, "POSSIBLE_MISSED_ASSESSMENT")
+        action_type = "DATA_REVIEW"
+    elif "NO_POST_QUIZ_INTERVENTION" in codes and risk_level in ("Critical", "High"):
+        primary_pattern = _pick_primary_pattern(patterns, "NO_POST_QUIZ_INTERVENTION")
+        action_type = "ONE_TO_ONE_TUTORING" if risk_level == "Critical" else ("PARENT_CALL" if parent_call_ok else "STUDENT_CHECK_IN")
+    elif "UNRESOLVED_FOLLOW_UP" in codes:
+        primary_pattern = _pick_primary_pattern(patterns, "UNRESOLVED_FOLLOW_UP")
+        action_type = "PARENT_CALL" if parent_call_ok else "STUDENT_CHECK_IN"
+    elif "RECOVERY_TRAJECTORY" in codes:
+        primary_pattern = _pick_primary_pattern(patterns, "RECOVERY_TRAJECTORY")
+        action_type = "POSITIVE_REINFORCEMENT"
+    elif "DATA_QUALITY_RISK" in codes and risk_level in ("Critical", "High"):
+        primary_pattern = _pick_primary_pattern(patterns, "DATA_QUALITY_RISK")
+        action_type = "DATA_REVIEW"
+    elif f.get("below_target") and risk_level in ("Medium", "Low"):
+        primary_pattern = _pick_primary_pattern(patterns, "STABLE_HEALTHY_BEHAVIOR") or _pick_primary_pattern(patterns, "LARGE_TARGET_GAP")
+        action_type = "MOTIVATIONAL_MESSAGE"
 
-    policy_frame = df["risk_level"].map(ACTION_POLICY).apply(pd.Series)
-    df["recommended_action"] = policy_frame["recommended_action"]
-    df["sla"] = policy_frame["sla"]
-    df["human_effort"] = policy_frame["human_effort"]
-    df["estimated_minutes"] = policy_frame["estimated_minutes"]
-    df["channel"] = policy_frame["channel"]
+    meta = ACTION_META[action_type]
+    # An SLA counts from *now*, so a 24h SLA means "by the end of today," not
+    # tomorrow — the previous version always added at least one full day,
+    # which meant nothing was ever due today and the Actions page's "Due
+    # Today" tab (and the My Day KPI) stayed empty even on Day 14 itself.
+    days_offset = max(0, -(-meta["sla_hours"] // 24) - 1)
+    due_date = as_of + timedelta(days=days_offset)
 
-    facilitator_briefs, parent_scripts, student_messages, next_steps = [], [], [], []
+    brief_lead = primary_pattern["explanation"] if primary_pattern else \
+        "No acute concern detected; behavior looks stable relative to peers."
+    brief = f"{brief_lead} Recommended: {meta['label']}."
 
-    for _, row in df.iterrows():
-        base_brief = _base_facilitator_brief(row, days_to_quiz2)
-        base_parent = _base_parent_script(row, days_to_quiz2)
-        base_student = _base_student_message(row)
-        base_next = _base_next_best_step(row)
-
-        context = build_student_context(row.to_dict())
-        llm_response = get_llm_response(context, settings, llm_log_path)
-
-        # LLM output enriches the deterministic base; empty/whitespace
-        # responses (shouldn't happen given pydantic validation, but data
-        # is data) fall back to the template so a field is never blank.
-        facilitator_briefs.append(llm_response.facilitator_brief.strip() or base_brief)
-        parent_scripts.append(llm_response.parent_message_ar.strip() or base_parent)
-        student_messages.append(llm_response.student_message_ar.strip() or base_student)
-        next_steps.append(llm_response.next_step.strip() or base_next)
-
-    df["facilitator_brief"] = facilitator_briefs
-    df["parent_script"] = parent_scripts
-    df["student_message"] = student_messages
-    df["next_best_step"] = next_steps
-
-    return df
+    return {
+        "action_type": action_type,
+        "priority": risk_level,
+        "due_date": due_date,
+        "sla_hours": meta["sla_hours"],
+        "estimated_minutes": meta["effort_min"],
+        "brief": brief,
+        "next_step": meta["next_step"],
+    }

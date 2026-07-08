@@ -1,25 +1,36 @@
-.PHONY: demo install test
+.PHONY: demo pipeline test reset install
 
-# Picks the newest available Python 3.11+ interpreter so `make demo` works
-# on a fresh clone even when the system `python3` is older (e.g. macOS's
-# stock 3.9). Falls back to plain `python3` if nothing newer is found.
-PYTHON := $(shell command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3)
 VENV := .venv
+PYTHON := $(VENV)/bin/python
+PIP := $(VENV)/bin/pip
 
-# One-command demo: create an isolated venv, install deps, run the
-# pipeline end to end, and print the summary.
-demo: install
-	@mkdir -p outputs
-	@$(VENV)/bin/python main.py
-	@echo ""
-	@echo "Launch the app with: streamlit run app.py"
+$(VENV)/bin/activate:
+	python3 -m venv $(VENV)
+	$(PIP) install --upgrade pip
+	$(PIP) install -r requirements.txt
 
-$(VENV)/bin/python:
-	@$(PYTHON) -m venv $(VENV)
+install: $(VENV)/bin/activate
 
-install: $(VENV)/bin/python
-	@$(VENV)/bin/pip install -q --upgrade pip
-	@$(VENV)/bin/pip install -q -r requirements.txt
+.env:
+	cp .env.example .env
+
+# 1) install deps  2) create outputs/  3-12) main.py does DB init, ingest,
+# validation, features, patterns, risk, actions, outputs, summary
+# 13) launch the app
+demo: install .env
+	mkdir -p outputs
+	$(PYTHON) main.py
+	$(PYTHON) -m streamlit run app.py --server.port $$(grep -m1 '^APP_PORT=' .env | cut -d= -f2)
+
+pipeline: install .env
+	mkdir -p outputs
+	$(PYTHON) main.py
 
 test: install
-	@$(VENV)/bin/pytest -q
+	$(PYTHON) -m pytest tests/ -v
+
+reset:
+	rm -f boon.db
+	rm -rf .cache
+	rm -rf outputs/parent_reports
+	rm -f outputs/*.csv outputs/*.json outputs/*.md outputs/*.jsonl outputs/*.html
