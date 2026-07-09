@@ -185,6 +185,8 @@ def _load_live_tables(session) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame
         "id": i.id, "student_id": i.student_id, "facilitator_email": i.facilitator_email,
         "action_type": i.action_type, "priority": i.priority, "due_date": i.due_date, "status": i.status,
         "outcome": i.outcome, "created_at": i.created_at, "completed_at": i.completed_at,
+        "source": i.source, "facilitator_overridden": i.facilitator_overridden,
+        "facilitator_note": i.facilitator_note,
     } for i in session.scalars(select(Intervention))])
 
     return meta, metrics, notes, interventions
@@ -204,18 +206,27 @@ def _upsert_risk_snapshots(session, risk_df: pd.DataFrame) -> None:
 
 
 def _upsert_recommended_interventions(session, risk_df: pd.DataFrame) -> None:
-    """Refreshes the one open (untouched-or-in-progress) intervention per
-    student. Deliberately does NOT spawn a new "recommended" row for a
-    student who already has ANY intervention on record — even a completed
-    one — because recompute_all() runs after every single facilitator
-    click (Start, Complete, message sent, ...). Keying only off "is it
-    still open" meant that the instant a facilitator resolved something
-    (completed/message_sent/booked — none of which count as "open"), the
-    very next recompute silently created a fresh "recommended" duplicate,
-    which made every action button look like it had no effect."""
+    """Refreshes the one open (untouched-or-in-progress) *system* intervention
+    per student. Deliberately does NOT spawn a new "recommended" row for a
+    student who already has ANY system intervention on record — even a
+    completed one — because recompute_all() runs after every single
+    facilitator click (Start, Complete, message sent, ...). Keying only off
+    "is it still open" meant that the instant a facilitator resolved
+    something (completed/message_sent/booked — none of which count as
+    "open"), the very next recompute silently created a fresh "recommended"
+    duplicate, which made every action button look like it had no effect.
+
+    Only rows with source="system" are considered here — a facilitator's own
+    manually-logged actions (an ad-hoc call, a booked session, an edited
+    reschedule) are never read or rewritten by this function, so the
+    recommendation engine can never silently clobber something a human
+    typed in. Same protection for a system row a facilitator explicitly
+    edited (facilitator_overridden=True): its action_type/priority/due_date
+    are frozen at whatever the facilitator set, permanently — only status
+    changes (Start/Complete/...) still apply on top of it."""
     open_by_student: dict[str, Intervention] = {}
     has_any_by_student: set[str] = set()
-    for iv in session.scalars(select(Intervention)):
+    for iv in session.scalars(select(Intervention).where(Intervention.source == "system")):
         has_any_by_student.add(iv.student_id)
         if iv.status in outputs_mod.OPEN_STATUSES:
             open_by_student.setdefault(iv.student_id, iv)
@@ -226,14 +237,15 @@ def _upsert_recommended_interventions(session, risk_df: pd.DataFrame) -> None:
         sid = row["student_id"]
         open_iv = open_by_student.get(sid)
         if open_iv is not None:
-            open_iv.action_type = row["recommended_action"]
-            open_iv.priority = row["risk_level"]
-            open_iv.due_date = row["due_date"]
+            if not open_iv.facilitator_overridden:
+                open_iv.action_type = row["recommended_action"]
+                open_iv.priority = row["risk_level"]
+                open_iv.due_date = row["due_date"]
         elif sid not in has_any_by_student:
             session.add(Intervention(
                 student_id=sid, facilitator_email=row["facilitator_email"],
                 action_type=row["recommended_action"], priority=row["risk_level"],
-                due_date=row["due_date"], status="recommended",
+                due_date=row["due_date"], status="recommended", source="system",
             ))
 
 
@@ -415,7 +427,6 @@ def run_pipeline(generate_llm_samples: bool = True) -> dict:
 
     out = SETTINGS.output_dir
     outputs_mod.write_csv(outputs_mod.build_risk_roster_df(risk_df), out / "student_risk_roster.csv")
-    outputs_mod.write_csv(outputs_mod.build_facilitator_worklist_df(risk_df), out / "facilitator_worklists.csv")
     outputs_mod.write_csv(interventions_df, out / "intervention_actions.csv")
     outputs_mod.write_csv(reports_mod.build_pattern_summary_df(risk_df), out / "pattern_summary.csv")
     outputs_mod.write_jsonl(llm_logs, out / "llm_messages.jsonl")
@@ -423,7 +434,7 @@ def run_pipeline(generate_llm_samples: bool = True) -> dict:
     (out / "facilitator_dashboard.html").write_text(reports_mod.build_facilitator_dashboard_html(stats, risk_df))
 
     output_paths = [
-        "data_quality_report.json", "student_risk_roster.csv", "facilitator_worklists.csv",
+        "data_quality_report.json", "student_risk_roster.csv",
         "intervention_actions.csv", "pattern_summary.csv", "llm_messages.jsonl",
         "executive_summary.md", "facilitator_dashboard.html", "run_summary.json", "parent_reports/",
     ]

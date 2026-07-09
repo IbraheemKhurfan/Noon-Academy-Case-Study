@@ -122,6 +122,19 @@ class Intervention(Base):
     outcome: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # "system" = owned by the rule-based recommendation engine — main.py's
+    # _upsert_recommended_interventions() is free to refresh its action_type/
+    # priority/due_date on every recompute. "manual" = a facilitator logged
+    # this themselves (extra/self-initiated work, a booking, a rescheduled
+    # call) and it must never be silently overwritten by the pipeline.
+    source: Mapped[str] = mapped_column(String, default="system")
+    # A facilitator's own edit to a priority card's displayed action/due
+    # date/explanation — never the risk or priority SCORE itself, which
+    # stays deterministic and non-editable by design. Once True, the
+    # pipeline's auto-refresh (_upsert_recommended_interventions) leaves
+    # action_type/priority/due_date alone for this row permanently.
+    facilitator_overridden: Mapped[bool] = mapped_column(Boolean, default=False)
+    facilitator_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
 class AvailabilitySlot(Base):
@@ -135,7 +148,31 @@ class AvailabilitySlot(Base):
     # shared link, so multiple slot rows intentionally carry the same token.
     booking_token: Mapped[str] = mapped_column(String, index=True)
     student_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    status: Mapped[str] = mapped_column(String, default="open")  # open|booked|cancelled
+    status: Mapped[str] = mapped_column(String, default="open")  # open|booked|cancelled|completed
+    # The single manual Intervention row this whole batch of time options is
+    # tracked against — created once, up front, so a booking shows up in
+    # Actions/My Day immediately rather than only after someone confirms a
+    # time via the public link.
+    intervention_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+
+class ChatSession(Base):
+    """One saved AI-chat conversation ('tab') per facilitator/admin."""
+
+    __tablename__ = "chat_sessions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_email: Mapped[str] = mapped_column(String, index=True)
+    title: Mapped[str] = mapped_column(String, default="New chat")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[int] = mapped_column(Integer, index=True)
+    role: Mapped[str] = mapped_column(String)  # user | assistant
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class Notification(Base):
@@ -171,8 +208,29 @@ def get_session_factory():
     return _SessionLocal
 
 
+def _migrate_add_missing_columns() -> None:
+    """`Base.metadata.create_all` only creates missing TABLES, never adds a
+    column to a table that already exists — so a DB created before the
+    `source` column existed would otherwise crash every query that touches
+    it. Cheap enough (a handful of PRAGMA calls) to run on every startup."""
+    engine = get_engine()
+    with engine.begin() as conn:
+        existing_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(interventions)").fetchall()}
+        if existing_cols and "source" not in existing_cols:
+            conn.exec_driver_sql("ALTER TABLE interventions ADD COLUMN source VARCHAR DEFAULT 'system'")
+        if existing_cols and "facilitator_overridden" not in existing_cols:
+            conn.exec_driver_sql("ALTER TABLE interventions ADD COLUMN facilitator_overridden BOOLEAN DEFAULT 0")
+        if existing_cols and "facilitator_note" not in existing_cols:
+            conn.exec_driver_sql("ALTER TABLE interventions ADD COLUMN facilitator_note TEXT")
+
+        slot_cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(availability_slots)").fetchall()}
+        if slot_cols and "intervention_id" not in slot_cols:
+            conn.exec_driver_sql("ALTER TABLE availability_slots ADD COLUMN intervention_id INTEGER")
+
+
 def init_db() -> None:
     Base.metadata.create_all(get_engine())
+    _migrate_add_missing_columns()
 
 
 @contextmanager
@@ -293,3 +351,19 @@ def all_campuses(session: Session) -> list[Campus]:
 
 def all_users(session: Session) -> list[User]:
     return list(session.scalars(select(User)))
+
+
+def chat_sessions_for(session: Session, user_email: str) -> list[ChatSession]:
+    return list(
+        session.scalars(
+            select(ChatSession).where(ChatSession.user_email == user_email).order_by(ChatSession.id.desc())
+        )
+    )
+
+
+def chat_messages_for(session: Session, session_id: int) -> list[ChatMessage]:
+    return list(
+        session.scalars(
+            select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.id)
+        )
+    )

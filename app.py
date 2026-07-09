@@ -5,6 +5,8 @@ facilitator can make (a note, a metric, an intervention status change).
 """
 from __future__ import annotations
 
+import calendar as calendar_mod
+import html as html_lib
 import secrets
 from datetime import date, datetime, time, timedelta
 
@@ -36,12 +38,16 @@ from src.config import (
 from src.db import (
     AvailabilitySlot,
     Campus,
+    ChatMessage,
+    ChatSession,
     FacilitatorNote,
     Intervention,
     Notification,
     Student,
     User,
     DailyMetric,
+    chat_messages_for,
+    chat_sessions_for,
     get_user_by_email,
     hash_password,
     init_db,
@@ -49,6 +55,7 @@ from src.db import (
     session_scope,
     verify_password,
 )
+from src.actions import ACTION_META
 
 st.set_page_config(page_title="Boon Academy Intervention Command Center", page_icon="📚",
                     layout="wide", initial_sidebar_state="expanded")
@@ -64,11 +71,13 @@ STATUS_ICONS = {
     "no_answer": "🔇", "message_sent": "✉️", "booked": "📅",
     "completed": "✅", "follow_up_required": "🔁", "escalated": "⬆️", "resolved": "✔️",
 }
+ACTION_TYPE_OPTIONS = list(ACTION_META.keys())
+STATUS_OPTIONS = ["recommended", "in_progress", "attempted", "no_answer", "follow_up_required", "completed"]
 # One icon per nav destination — keeps the internal page keys (used throughout
 # for routing) untouched; icons are applied only at render time via format_func.
 NAV_ICONS = {
     "My Day": "🏠", "My Students": "👥", "Student Detail": "🔍", "Actions": "🎯",
-    "Parent Calls": "📞", "Calendar": "📅", "Data Entry": "📝", "Admin": "🛠️",
+    "Parent Calls": "📞", "Calendar": "📅", "Data Entry": "📝", "Ask AI": "🤖", "Admin": "🛠️",
 }
 
 # Design system for the app chrome — dark, technical, high-contrast, built
@@ -297,11 +306,19 @@ def open_intervention_for(interventions_df: pd.DataFrame, student_id: str) -> di
     return chosen.to_dict()
 
 
-def set_intervention_status(student_id: str, facilitator_email: str, action_type: str, priority: str,
-                             due_date: date, status: str, outcome: str | None = None) -> None:
+def set_system_intervention_status(student_id: str, facilitator_email: str, action_type: str, priority: str,
+                                    due_date: date, status: str, outcome: str | None = None) -> None:
+    """Updates (or creates) the ONE system-owned intervention row for this
+    student — this is what every "official" queue action (Start/Complete/
+    No Answer/Follow Up, a message marked sent, a parent-call outcome)
+    mutates. Deliberately scoped to source="system" so it can never grab a
+    facilitator's own manually-logged row (see add_manual_intervention) —
+    before this scoping, whichever row happened to have the highest id got
+    silently repurposed, which could clobber an unrelated manual entry."""
     with session_scope() as session:
         existing = session.scalars(
-            select(Intervention).where(Intervention.student_id == student_id).order_by(Intervention.id.desc())
+            select(Intervention).where(Intervention.student_id == student_id, Intervention.source == "system")
+            .order_by(Intervention.id.desc())
         ).first()
         if existing is not None:
             existing.status = status
@@ -312,16 +329,83 @@ def set_intervention_status(student_id: str, facilitator_email: str, action_type
         else:
             session.add(Intervention(
                 student_id=student_id, facilitator_email=facilitator_email, action_type=action_type,
-                priority=priority, due_date=due_date, status=status, outcome=outcome,
+                priority=priority, due_date=due_date, status=status, outcome=outcome, source="system",
                 completed_at=datetime.utcnow() if status in ("completed", "resolved") else None,
             ))
+
+
+def add_manual_intervention(student_id: str, facilitator_email: str, action_type: str, priority: str,
+                             due_date: date, status: str, outcome: str | None = None) -> int:
+    """Always INSERTS a brand-new source="manual" row — used for self-
+    initiated actions (a call the facilitator made on their own, a booked
+    tutoring session, a rescheduled follow-up). Never touched by the
+    pipeline's auto-recommendation refresh, and always additional to
+    (never replacing) any system-owned thread for the same student."""
+    with session_scope() as session:
+        iv = Intervention(
+            student_id=student_id, facilitator_email=facilitator_email, action_type=action_type,
+            priority=priority, due_date=due_date, status=status, outcome=outcome, source="manual",
+            completed_at=datetime.utcnow() if status in ("completed", "resolved") else None,
+        )
+        session.add(iv)
+        session.flush()
+        return iv.id
+
+
+def upsert_card_override(student_id: str, facilitator_email: str, action_type: str, priority: str,
+                          due_date: date, note: str) -> None:
+    """Backs both 'edit this priority card' and 'add a new priority card':
+    overrides whichever intervention is currently open for this student
+    (system or manual) with a facilitator-chosen action/due date/why-note,
+    and marks it facilitator_overridden so main.py's pipeline refresh never
+    reverts it. If the student has no open intervention at all yet (e.g. a
+    Low-risk student the system never flagged), creates a new manual one —
+    this is what makes "add a custom priority card" possible for anyone,
+    not just already-flagged students. The risk/priority SCORE itself is
+    never touched here — only the displayed action/date/explanation."""
+    with session_scope() as session:
+        existing = session.scalars(
+            select(Intervention).where(Intervention.student_id == student_id,
+                                        Intervention.status.in_(outputs_mod.OPEN_STATUSES))
+            .order_by(Intervention.id.desc())
+        ).first()
+        if existing is not None:
+            existing.action_type = action_type
+            existing.priority = priority
+            existing.due_date = due_date
+            existing.facilitator_note = note
+            existing.facilitator_overridden = True
+        else:
+            session.add(Intervention(
+                student_id=student_id, facilitator_email=facilitator_email, action_type=action_type,
+                priority=priority, due_date=due_date, status="recommended", source="manual",
+                facilitator_note=note, facilitator_overridden=True,
+            ))
+
+
+def update_intervention(intervention_id: int, **fields) -> None:
+    """Edits any single intervention row (system or manual) by primary key —
+    backs the facilitator-facing 'edit an action' UI."""
+    with session_scope() as session:
+        iv = session.get(Intervention, intervention_id)
+        if iv is None:
+            return
+        for key, value in fields.items():
+            setattr(iv, key, value)
+        if fields.get("status") in ("completed", "resolved") and iv.completed_at is None:
+            iv.completed_at = datetime.utcnow()
+
+
+def delete_intervention(intervention_id: int) -> None:
+    with session_scope() as session:
+        session.query(Intervention).filter(Intervention.id == intervention_id).delete()
 
 
 # --- Login ------------------------------------------------------------------
 
 def render_login() -> None:
     st.title("📚 Boon Academy Intervention Command Center")
-    st.caption("Day 14 · Quiz 1 was Day 10 · Quiz 2 is Day 20 · 6 days remain")
+    st.caption("Lets make sure every student gets the support they need to succeed.")
     _, mid, _ = st.columns([1, 1.2, 1])
     with mid:
         with st.form("login_form"):
@@ -363,7 +447,7 @@ def render_my_day(user: dict) -> None:
     st.title("🏠 My Day")
     st.caption(f"Signed in as {user['display_name']} · {len(mine)} students assigned to you")
 
-    action_message = st.session_state.pop("action_message", None)
+    action_message = st.session_state.pop("action_message", None) or st.session_state.pop("data_entry_message", None)
     if action_message:
         st.success(action_message)
 
@@ -372,13 +456,15 @@ def render_my_day(user: dict) -> None:
                                   (my_interventions["status"].isin(outputs_mod.OPEN_STATUSES))]
     overdue = my_interventions[(pd.to_datetime(my_interventions["due_date"]).dt.date < today) &
                                 (my_interventions["status"].isin(outputs_mod.OPEN_STATUSES))]
-    completed_today = my_interventions[my_interventions["status"].isin(["completed", "resolved"])]
     planned_minutes = mine[mine["student_id"].isin(due_today["student_id"])]["estimated_minutes"].sum()
 
     c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
     kpi(c1, len(mine), "My Students", "👥", "Total active students assigned to you.")
-    kpi(c2, coverage["students_needing_intervention"], "Need Intervention", "⚠️",
-        "Students at Medium/High/Critical risk, or below their target score.")
+    kpi(c2, coverage["students_still_needing_intervention"], "Need Intervention", "⚠️",
+        "Students at Medium/High/Critical risk (or below target) who don't yet have a completed/sent/booked "
+        f"interaction — {coverage['students_needing_intervention']} total need help, "
+        f"{coverage['successful_interaction_count']} already have one. This drops as you complete actions, and "
+        "rises again if one is reopened/deleted or another student becomes at-risk.")
     kpi(c3, fmt_pct(coverage['successful_interaction_rate']), "Successful Interaction Rate", "✅",
         "Share of students-who-need-help with a real completed/sent/booked interaction — "
         "not just a recommendation or an unanswered call.")
@@ -391,8 +477,31 @@ def render_my_day(user: dict) -> None:
                 text=f"Progress toward 80% successful interaction rate ({fmt_pct(coverage['successful_interaction_rate'])} actual, "
                      f"{fmt_pct(coverage['projected_coverage'])} projected including today's queue)")
 
+    # Treat today's queue as a todo list: a stable denominator (everything
+    # due today, whatever its current status) so "done" grows and
+    # "remaining" shrinks as the SAME list, instead of a completed item
+    # simply vanishing from view with no visible sense of progress made.
+    todays_items = my_interventions[pd.to_datetime(my_interventions["due_date"]).dt.date == today]
+    done_today = todays_items[todays_items["status"].isin(outputs_mod.SUCCESS_STATUSES)]
+    remaining_today = todays_items[todays_items["status"].isin(outputs_mod.OPEN_STATUSES)]
+    if len(todays_items):
+        st.progress(len(done_today) / len(todays_items),
+                    text=f"📋 Today's checklist: **{len(done_today)} of {len(todays_items)} done** "
+                         f"({len(remaining_today)} remaining)")
+
+    render_log_action_form(user, mine[["student_id", "student_name", "risk_level"]], key_prefix="myday")
+    render_add_custom_card_form(user, mine)
+
     st.subheader("🚨 Highest Priority Actions Today")
-    needing = mine[outputs_mod.needs_intervention_mask(mine)].sort_values("priority_score", ascending=False)
+    # A facilitator-added custom card (via "Add a custom priority card")
+    # earns its student a spot in today's list even if the risk engine
+    # itself never flagged them — e.g. a Low-risk student a parent asked
+    # about. The override never touches the risk/priority score shown.
+    override_ids = set(
+        my_interventions[my_interventions["facilitator_overridden"] & my_interventions["status"].isin(outputs_mod.OPEN_STATUSES)]["student_id"]
+    )
+    needing_mask = outputs_mod.needs_intervention_mask(mine) | mine["student_id"].isin(override_ids)
+    needing = mine[needing_mask].sort_values("priority_score", ascending=False)
     if needing.empty:
         st.success("No students currently need intervention. 🎉")
         return
@@ -431,46 +540,67 @@ def render_my_day(user: dict) -> None:
 def render_priority_card(row: pd.Series, interventions_df: pd.DataFrame) -> None:
     iv = open_intervention_for(interventions_df, row["student_id"])
     status = iv["status"] if iv else "recommended"
+    iv_id = int(iv["id"]) if iv is not None else None
+    overridden = bool(iv and iv.get("facilitator_overridden"))
+    sid = row["student_id"]
+    name = row["student_name"]
+    edit_key = f"editing_card_{sid}"
+
+    # An override changes what's DISPLAYED and acted on (action type, due
+    # date, why-text) — never the risk/priority score, which stays
+    # algorithmic. Falls back to the system-computed values when no
+    # override exists.
+    action_type_display = iv["action_type"] if overridden else row["recommended_action"]
+    due_date_display = pd.to_datetime(iv["due_date"]).date() if overridden else row["due_date"]
+    minutes_display = ACTION_META.get(action_type_display, {}).get("effort_min", row["estimated_minutes"])
+
+    def apply_status(new_status: str, message: str, outcome: str | None = None) -> None:
+        # Updates whichever row this card is ALREADY showing (by exact id)
+        # rather than re-querying "the latest row for this student" — a
+        # manually-added/overridden card may have no "system" row at all,
+        # so re-deriving it here could create a second, disconnected row.
+        if iv_id is not None:
+            fields: dict = {"status": new_status}
+            if outcome is not None:
+                fields["outcome"] = outcome
+            update_intervention(iv_id, **fields)
+        else:
+            set_system_intervention_status(sid, row["facilitator_email"], row["recommended_action"],
+                                            row["risk_level"], row["due_date"], new_status, outcome)
+        st.session_state["action_message"] = message
+        refresh_and_rerun()
+
     with st.container(border=True):
         top = st.columns([3, 1, 1, 1])
-        top[0].markdown(f"**{row['student_name']}** &nbsp; {risk_badge(row['risk_level'])}", unsafe_allow_html=True)
+        top[0].markdown(f"**{name}** &nbsp; {risk_badge(row['risk_level'])}", unsafe_allow_html=True)
         top[1].metric("🎯 Priority", f"{row['priority_score']:.0f}",
-                       help="0-100 blend of risk (80%) and urgency (20%) — sets this card's place in the queue.")
+                       help="0-100 blend of risk (80%) and urgency (20%) — sets this card's place in the queue. "
+                            "Deterministic — never editable.")
         top[2].metric("📶 Confidence", f"{row['confidence']:.0%}",
                        help="How complete the underlying data is for this student.")
         top[3].markdown(status_chip(status), unsafe_allow_html=True)
 
-        patterns = row["patterns"] if isinstance(row["patterns"], list) else []
-        why = patterns[0]["explanation"] if patterns else "No acute pattern detected."
-        st.markdown(f"**💡 Why:** {why}")
-        if patterns and patterns[0].get("evidence"):
-            st.caption("📎 Evidence: " + ", ".join(f"{k}={v}" for k, v in patterns[0]["evidence"].items() if v is not None))
-        st.markdown(f"**✅ Recommended:** {row['recommended_action'].replace('_', ' ').title()} · "
-                    f"Due {row['due_date']} · ~{row['estimated_minutes']} min")
+        if overridden and iv.get("facilitator_note"):
+            st.markdown(f"**💡 Why:** {iv['facilitator_note']}")
+            st.caption("✏️ Edited by you")
+        else:
+            patterns = row["patterns"] if isinstance(row["patterns"], list) else []
+            why = patterns[0]["explanation"] if patterns else "No acute pattern detected."
+            st.markdown(f"**💡 Why:** {why}")
+            if patterns and patterns[0].get("evidence"):
+                st.caption("📎 Evidence: " + ", ".join(f"{k}={v}" for k, v in patterns[0]["evidence"].items() if v is not None))
+        st.markdown(f"**✅ Recommended:** {action_type_display.replace('_', ' ').title()} · "
+                    f"Due {due_date_display} · ~{minutes_display} min")
 
-        btns = st.columns(6)
-        sid = row["student_id"]
-        name = row["student_name"]
+        btns = st.columns(7)
         if btns[0].button("▶️ Start", key=f"start_{sid}", use_container_width=True):
-            set_intervention_status(sid, row["facilitator_email"], row["recommended_action"], row["risk_level"],
-                                     row["due_date"], "in_progress")
-            st.session_state["action_message"] = f"▶️ **{name}** marked in progress — moved to the In Progress tab."
-            refresh_and_rerun()
+            apply_status("in_progress", f"▶️ **{name}** marked in progress — moved to the In Progress tab.")
         if btns[1].button("🔇 No Answer", key=f"noans_{sid}", use_container_width=True):
-            set_intervention_status(sid, row["facilitator_email"], row["recommended_action"], row["risk_level"],
-                                     row["due_date"], "no_answer")
-            st.session_state["action_message"] = f"🔇 Logged a no-answer attempt for **{name}** — this counts as an attempt, not a success yet."
-            refresh_and_rerun()
+            apply_status("no_answer", f"🔇 Logged a no-answer attempt for **{name}** — this counts as an attempt, not a success yet.")
         if btns[2].button("✅ Complete", key=f"complete_{sid}", use_container_width=True):
-            set_intervention_status(sid, row["facilitator_email"], row["recommended_action"], row["risk_level"],
-                                     row["due_date"], "completed")
-            st.session_state["action_message"] = f"✅ **{name}**'s intervention marked complete — moved to the Completed tab and counted toward your interaction rate."
-            refresh_and_rerun()
+            apply_status("completed", f"✅ **{name}**'s intervention marked complete — moved to the Completed tab and counted toward your interaction rate.")
         if btns[3].button("🔁 Follow Up", key=f"followup_{sid}", use_container_width=True):
-            set_intervention_status(sid, row["facilitator_email"], row["recommended_action"], row["risk_level"],
-                                     row["due_date"], "follow_up_required")
-            st.session_state["action_message"] = f"🔁 **{name}** flagged for follow-up — moved to the Follow Up tab."
-            refresh_and_rerun()
+            apply_status("follow_up_required", f"🔁 **{name}** flagged for follow-up — moved to the Follow Up tab.")
         if btns[4].button("🔍 Open Detail", key=f"detail_{sid}", use_container_width=True):
             st.session_state.selected_student_id = sid
             st.session_state.nav_request = "Student Detail"
@@ -481,6 +611,29 @@ def render_priority_card(row: pd.Series, interventions_df: pd.DataFrame) -> None
             st.session_state.selected_student_id = sid
             st.session_state.nav_request = "Student Detail"
             st.rerun()
+        if btns[6].button("✏️ Edit", key=f"editcard_{sid}", use_container_width=True):
+            st.session_state[edit_key] = not st.session_state.get(edit_key, False)
+
+        if st.session_state.get(edit_key):
+            with st.form(f"edit_card_form_{sid}"):
+                st.caption("Overrides what this card recommends and why — the risk score, priority, and "
+                           "confidence above stay computed, never editable.")
+                ec1, ec2 = st.columns(2)
+                new_action = ec1.selectbox(
+                    "Recommended action", ACTION_TYPE_OPTIONS,
+                    index=ACTION_TYPE_OPTIONS.index(action_type_display) if action_type_display in ACTION_TYPE_OPTIONS else 0,
+                    format_func=lambda a: ACTION_META[a]["label"])
+                new_due = ec2.date_input("Due date", value=due_date_display)
+                new_note = st.text_area("Custom 'why' shown on the card",
+                                         value=iv.get("facilitator_note") or "" if overridden else "",
+                                         placeholder="e.g. Parent asked us to keep a closer eye this week")
+                save = st.form_submit_button("💾 Save card edits", type="primary")
+            if save:
+                upsert_card_override(sid, row["facilitator_email"], new_action, row["risk_level"], new_due,
+                                      new_note.strip())
+                st.session_state[edit_key] = False
+                st.session_state["action_message"] = f"✏️ Updated **{name}**'s card."
+                refresh_and_rerun()
 
 
 # --- My Students -------------------------------------------------------------
@@ -619,7 +772,7 @@ def render_student_detail(user: dict) -> None:
         render_message_tab(user, sid, row)
 
     with tabs[5]:
-        render_interventions_tab(sid, row, computed["interventions_df"])
+        render_interventions_tab(user, sid, row, computed["interventions_df"])
 
     with tabs[6]:
         render_parent_report_tab(user, sid, row, computed)
@@ -689,13 +842,16 @@ def _positive_fact_for(row: pd.Series) -> str | None:
     return None
 
 
+MESSAGE_CHANNELS = {"🖥️ In-System": "student_message", "💬 WhatsApp": "whatsapp", "✉️ Email": "email"}
+
+
 def render_message_tab(user: dict, sid: str, row: pd.Series) -> None:
     sent_notice = st.session_state.pop(f"msg_sent_notice_{sid}", None)
     if sent_notice:
         st.success(sent_notice)
 
     st.caption("Generate a short, personalized motivational message in Arabic — built only from verified "
-               "data below, never invented details.")
+               "data below (score gap, attendance/practice trend, days to Quiz 2), never invented details.")
     positive_fact = _positive_fact_for(row)
     if positive_fact:
         st.caption(f"✅ Verified positive fact available: _{positive_fact}_")
@@ -705,21 +861,26 @@ def render_message_tab(user: dict, sid: str, row: pd.Series) -> None:
     variant_key = f"msg_variant_{sid}"
     text_key = f"msg_text_{sid}"
 
+    def _llm_context(variant: int) -> dict:
+        gap = row["target_score"] - row["quiz1_score"] if pd.notna(row.get("quiz1_score")) else None
+        return {
+            "student_id": sid, "first_name": row["student_name"].split()[0],
+            "positive_fact": positive_fact, "next_step": row["next_step"], "variant": variant,
+            "days_until_quiz2": SETTINGS.days_until_quiz2,
+            "gap_to_target": round(gap, 1) if gap is not None else None,
+            "attendance_trend": row.get("attendance_trend"),
+            "practice_trend": row.get("practice_trend"),
+        }
+
     gen_col, regen_col = st.columns(2)
     if gen_col.button("🧠 Generate Message", key=f"gen_msg_{sid}", use_container_width=True, type="primary"):
         st.session_state[variant_key] = 0
-        text, _log = llm_mod.generate_motivational_message({
-            "student_id": sid, "first_name": row["student_name"].split()[0],
-            "positive_fact": positive_fact, "next_step": row["next_step"], "variant": 0,
-        })
+        text, _log = llm_mod.generate_motivational_message(_llm_context(0))
         st.session_state[text_key] = text
     if regen_col.button("🔄 Regenerate", key=f"regen_msg_{sid}", use_container_width=True,
                          disabled=text_key not in st.session_state):
         st.session_state[variant_key] = st.session_state.get(variant_key, 0) + 1
-        text, _log = llm_mod.generate_motivational_message({
-            "student_id": sid, "first_name": row["student_name"].split()[0],
-            "positive_fact": positive_fact, "next_step": row["next_step"], "variant": st.session_state[variant_key],
-        })
+        text, _log = llm_mod.generate_motivational_message(_llm_context(st.session_state[variant_key]))
         st.session_state[text_key] = text
 
     if text_key in st.session_state:
@@ -728,17 +889,19 @@ def render_message_tab(user: dict, sid: str, row: pd.Series) -> None:
         st.caption("📋 Copy — hover the box below and click its copy icon:")
         st.code(edited, language=None)
 
-        if st.button("✅ Mark as Sent", key=f"send_msg_{sid}", type="primary"):
+        channel_label = st.radio("Send via", list(MESSAGE_CHANNELS.keys()), horizontal=True, key=f"msg_channel_{sid}")
+        if st.button(f"✅ Mark as Sent via {channel_label}", key=f"send_msg_{sid}", type="primary"):
+            channel = MESSAGE_CHANNELS[channel_label]
             with session_scope() as session:
                 session.add(Notification(
-                    student_id=sid, facilitator_email=user["email"], channel="student_message",
+                    student_id=sid, facilitator_email=user["email"], channel=channel,
                     sections="[]", content=edited, status="simulated_sent",
                 ))
-            set_intervention_status(sid, user["email"], row["recommended_action"], row["risk_level"],
+            set_system_intervention_status(sid, user["email"], row["recommended_action"], row["risk_level"],
                                      row["due_date"], "message_sent",
-                                     outcome=f"Motivational message sent: {edited[:150]}")
+                                     outcome=f"Motivational message sent via {channel_label}: {edited[:150]}")
             st.session_state[f"msg_sent_notice_{sid}"] = (
-                "Message marked as sent (dry-run) and logged as a completed interaction — "
+                f"Message marked as sent via {channel_label} (dry-run) and logged as a completed interaction — "
                 "this is what actually moves the successful-interaction rate, not the draft itself.")
             del st.session_state[text_key]
             st.session_state.pop(variant_key, None)
@@ -746,17 +909,144 @@ def render_message_tab(user: dict, sid: str, row: pd.Series) -> None:
     else:
         st.info("Click **Generate Message** to draft a personalized note.")
 
+    with session_scope() as session:
+        sent_history = session.scalars(
+            select(Notification).where(Notification.student_id == sid).order_by(Notification.created_at.desc())
+        ).all()
+        history_rows = [{"when": n.created_at, "channel": n.channel, "content": n.content, "status": n.status}
+                         for n in sent_history]
+    with st.expander(f"📜 Message history ({len(history_rows)})", expanded=False):
+        if not history_rows:
+            st.caption("Nothing sent to this student yet — this is where every past message you send will show up, "
+                       "so you can track what you've already done.")
+        for h in history_rows:
+            channel_icon = {"student_message": "🖥️", "whatsapp": "💬", "email": "✉️"}.get(h["channel"], "📨")
+            with st.container(border=True):
+                st.caption(f"{channel_icon} {h['channel']} · {h['when']} · {h['status']}")
+                st.write(h["content"])
 
-def render_interventions_tab(sid: str, row: pd.Series, interventions_df: pd.DataFrame) -> None:
-    mine = interventions_df[interventions_df["student_id"] == sid].sort_values("created_at")
+
+def render_log_action_form(user: dict, options_df: pd.DataFrame, key_prefix: str,
+                            default_action_type: str = "PARENT_CALL") -> None:
+    """Shared 'record an action I took myself' form — used on My Day,
+    Actions, Parent Calls, and Student Detail. Lets a facilitator log ANY
+    action for ANY of their own students, regardless of what the system
+    currently recommends: an ad-hoc call nobody asked for, tomorrow's work
+    pulled forward because there's spare time today, a session already
+    done. Always creates a manual intervention row (add_manual_intervention)
+    — never touches or suppresses the system's own recommendation thread
+    for that student, and still counts toward the successful-interaction
+    rate once marked completed."""
+    with st.expander("➕ Log an action you took yourself"):
+        st.caption("For anything you did that wasn't on your recommended list — an extra call, doing tomorrow's "
+                   "work early, a booked session. Recorded separately from the system's own queue.")
+        with st.form(f"log_action_{key_prefix}"):
+            student_label = st.selectbox("Student", options_df["student_id"] + " — " + options_df["student_name"],
+                                          key=f"log_action_student_{key_prefix}")
+            c1, c2 = st.columns(2)
+            default_idx = ACTION_TYPE_OPTIONS.index(default_action_type) if default_action_type in ACTION_TYPE_OPTIONS else 0
+            action_type = c1.selectbox("Action type", ACTION_TYPE_OPTIONS, index=default_idx,
+                                        format_func=lambda a: ACTION_META[a]["label"], key=f"log_action_type_{key_prefix}")
+            status = c2.selectbox("Status", STATUS_OPTIONS, index=STATUS_OPTIONS.index("completed"),
+                                   format_func=lambda s: STATUS_LABELS.get(s, s), key=f"log_action_status_{key_prefix}")
+            due = st.date_input("Date", value=SETTINGS.as_of_date, key=f"log_action_date_{key_prefix}")
+            notes = st.text_area("Notes / outcome", key=f"log_action_notes_{key_prefix}")
+            submitted = st.form_submit_button("💾 Save action")
+        if submitted:
+            sid = student_label.split(" — ")[0]
+            match = options_df[options_df["student_id"] == sid]
+            priority = match.iloc[0]["risk_level"] if "risk_level" in match.columns and not match.empty else "Medium"
+            add_manual_intervention(sid, user["email"], action_type, priority, due, status, outcome=notes or None)
+            st.session_state["data_entry_message"] = f"Logged {ACTION_META[action_type]['label']} for {sid}."
+            refresh_and_rerun()
+
+
+def render_add_custom_card_form(user: dict, mine_df: pd.DataFrame) -> None:
+    """Puts any of the facilitator's students onto today's priority list,
+    with their own reason and recommended action — for a student the
+    system hasn't flagged (e.g. Low risk) but they want to keep an eye on.
+    Backed by upsert_card_override, same as editing an existing card, so
+    it's never touched by the pipeline's auto-recommendation refresh and
+    the risk/priority score is never fabricated — the student's REAL
+    computed risk badge still shows on the resulting card."""
+    with st.expander("➕ Add a custom priority card"):
+        st.caption("Put a student on today's list yourself, with your own reason and recommended action — "
+                   "useful for someone the system hasn't flagged but you want to watch.")
+        with st.form("add_custom_card"):
+            student_label = st.selectbox("Student", mine_df["student_id"] + " — " + mine_df["student_name"],
+                                          key="custom_card_student")
+            c1, c2 = st.columns(2)
+            action_type = c1.selectbox("Recommended action", ACTION_TYPE_OPTIONS,
+                                        format_func=lambda a: ACTION_META[a]["label"], key="custom_card_action")
+            due = c2.date_input("Due date", value=SETTINGS.as_of_date, key="custom_card_due")
+            note = st.text_area("Why (shown on the card instead of the auto-detected explanation)",
+                                 key="custom_card_note",
+                                 placeholder="e.g. Parent asked me to keep a closer eye this week")
+            submitted = st.form_submit_button("💾 Add to today's priority list", type="primary")
+        if submitted and note.strip():
+            sid = student_label.split(" — ")[0]
+            row = mine_df[mine_df["student_id"] == sid].iloc[0]
+            upsert_card_override(sid, user["email"], action_type, row["risk_level"], due, note.strip())
+            st.session_state["action_message"] = f"✏️ Added a custom priority card for **{row['student_name']}**."
+            refresh_and_rerun()
+        elif submitted:
+            st.warning("Add a short reason in the 'Why' field so the card has something to show.")
+
+
+def render_interventions_tab(user: dict, sid: str, row: pd.Series, interventions_df: pd.DataFrame) -> None:
+    change_message = st.session_state.pop(f"iv_change_message_{sid}", None)
+    if change_message:
+        st.success(change_message)
+
+    mine = interventions_df[interventions_df["student_id"] == sid].sort_values("created_at", ascending=False)
     if mine.empty:
         st.info("No interventions recorded yet.")
     for _, iv in mine.iterrows():
+        iv_id = int(iv["id"])
+        source_label = "🔧 System-recommended" if iv.get("source", "system") == "system" else "🧑‍🏫 Logged by you"
         with st.container(border=True):
-            st.markdown(f"**{iv['action_type'].replace('_', ' ').title()}** — status: "
-                        f"**{STATUS_LABELS.get(iv['status'], iv['status'])}** · due {iv['due_date']}")
+            top = st.columns([3, 1])
+            top[0].markdown(f"**{iv['action_type'].replace('_', ' ').title()}** — status: "
+                            f"**{STATUS_LABELS.get(iv['status'], iv['status'])}** · due {iv['due_date']}")
+            top[1].caption(source_label)
             if iv["outcome"]:
                 st.caption(f"Outcome: {iv['outcome']}")
+
+            edit_key = f"editing_iv_{iv_id}"
+            btn_cols = st.columns([1, 1, 4])
+            if btn_cols[0].button("✏️ Edit", key=f"edit_btn_{iv_id}", use_container_width=True):
+                st.session_state[edit_key] = not st.session_state.get(edit_key, False)
+            if btn_cols[1].button("🗑️ Delete", key=f"delete_btn_{iv_id}", use_container_width=True):
+                delete_intervention(iv_id)
+                st.session_state[f"iv_change_message_{sid}"] = f"Deleted the {iv['action_type'].replace('_', ' ').title()} action."
+                refresh_and_rerun()
+
+            if st.session_state.get(edit_key):
+                with st.form(f"edit_iv_form_{iv_id}"):
+                    ec1, ec2 = st.columns(2)
+                    e_action_type = ec1.selectbox(
+                        "Action type", ACTION_TYPE_OPTIONS,
+                        index=ACTION_TYPE_OPTIONS.index(iv["action_type"]) if iv["action_type"] in ACTION_TYPE_OPTIONS else 0,
+                        format_func=lambda a: ACTION_META[a]["label"], key=f"edit_type_{iv_id}")
+                    e_status = ec2.selectbox(
+                        "Status", STATUS_OPTIONS,
+                        index=STATUS_OPTIONS.index(iv["status"]) if iv["status"] in STATUS_OPTIONS else 0,
+                        format_func=lambda s: STATUS_LABELS.get(s, s), key=f"edit_status_{iv_id}")
+                    e_due = st.date_input("Due date", value=pd.to_datetime(iv["due_date"]).date(), key=f"edit_due_{iv_id}")
+                    e_outcome = st.text_area("Outcome / notes", value=iv["outcome"] or "", key=f"edit_outcome_{iv_id}")
+                    save = st.form_submit_button("💾 Save changes")
+                if save:
+                    update_intervention(iv_id, action_type=e_action_type, status=e_status, due_date=e_due,
+                                        outcome=e_outcome or None)
+                    st.session_state[edit_key] = False
+                    st.session_state[f"iv_change_message_{sid}"] = "Action updated."
+                    refresh_and_rerun()
+
+    st.divider()
+    student_option_df = pd.DataFrame([{"student_id": sid, "student_name": row["student_name"],
+                                        "risk_level": row["risk_level"]}])
+    default_type = row["recommended_action"] if row["recommended_action"] in ACTION_TYPE_OPTIONS else "PARENT_CALL"
+    render_log_action_form(user, student_option_df, key_prefix=f"studentdetail_{sid}", default_action_type=default_type)
 
 
 def render_parent_report_tab(user: dict, sid: str, row: pd.Series, computed: dict) -> None:
@@ -828,6 +1118,10 @@ def render_timeline_tab(sid: str, computed: dict) -> None:
 # --- Actions page -------------------------------------------------------------
 
 def render_actions(user: dict) -> None:
+    flash = st.session_state.pop("data_entry_message", None)
+    if flash:
+        st.success(flash)
+
     computed = get_computed()
     risk_df = computed["risk_df"]
     interventions_df = computed["interventions_df"]
@@ -838,9 +1132,14 @@ def render_actions(user: dict) -> None:
 
     eyebrow("STATUS QUEUE")
     st.title("🎯 Actions")
+
+    if user["role"] != "admin":
+        render_log_action_form(user, df[["student_id", "student_name", "risk_level"]], key_prefix="actions")
+
     today = SETTINGS.as_of_date
     buckets = {
         "📌 Due Today": iv[(iv["due_date"] == today) & iv["status"].isin(outputs_mod.OPEN_STATUSES)],
+        "📅 Upcoming": iv[(iv["due_date"] > today) & iv["status"].isin(outputs_mod.OPEN_STATUSES)],
         "⏰ Overdue": iv[(iv["due_date"] < today) & iv["status"].isin(outputs_mod.OPEN_STATUSES)],
         "🔄 In Progress": iv[iv["status"] == "in_progress"],
         "🔇 No Answer": iv[iv["status"] == "no_answer"],
@@ -856,7 +1155,7 @@ def render_actions(user: dict) -> None:
                 bucket_df = sub.sort_values("priority_score", ascending=False)[
                     ["student_id", "student_name", "action_type", "priority", "due_date", "status"]
                 ]
-                # Explicit key (six tabs render structurally identical dataframes)
+                # Explicit key (tabs render structurally identical dataframes)
                 # AND an explicit height: left to auto-size, Streamlit's grid
                 # recalculates its height against the row count on every layout
                 # pass, which for a large bucket (dozens of rows) triggered a
@@ -865,66 +1164,321 @@ def render_actions(user: dict) -> None:
                 st.dataframe(bucket_df, use_container_width=True, column_config=with_column_help(bucket_df),
                              key=f"actions_bucket_{label}", height=380)
 
+    if user["role"] != "admin":
+        render_intervention_manager(iv, key_prefix="actions")
+
+
+def render_intervention_manager(interventions_df: pd.DataFrame, key_prefix: str) -> None:
+    """Compact edit/delete tool for any existing intervention row — pick one
+    by student, adjust its type/status/due date/outcome, or remove it
+    entirely. Works on system AND manually-logged rows alike, and is the
+    one place a facilitator can reschedule an upcoming action or fix a
+    mistaken entry."""
+    if interventions_df.empty:
+        return
+    with st.expander("✏️ Edit or delete an action"):
+        options = interventions_df.sort_values("created_at", ascending=False)
+        labels = [f"#{int(r['id'])} · {r['student_name']} · {r['action_type']} · {STATUS_LABELS.get(r['status'], r['status'])}"
+                  for _, r in options.iterrows()]
+        chosen = st.selectbox("Action", labels, key=f"manage_pick_{key_prefix}", index=None,
+                               placeholder="Choose an action to edit or delete...")
+        if not chosen:
+            return
+        iv_id = int(chosen.split("·")[0].strip().lstrip("#"))
+        iv_row = options[options["id"] == iv_id].iloc[0]
+        with st.form(f"manage_form_{key_prefix}_{iv_id}"):
+            c1, c2 = st.columns(2)
+            action_type = c1.selectbox(
+                "Action type", ACTION_TYPE_OPTIONS,
+                index=ACTION_TYPE_OPTIONS.index(iv_row["action_type"]) if iv_row["action_type"] in ACTION_TYPE_OPTIONS else 0,
+                format_func=lambda a: ACTION_META[a]["label"])
+            status = c2.selectbox(
+                "Status", STATUS_OPTIONS,
+                index=STATUS_OPTIONS.index(iv_row["status"]) if iv_row["status"] in STATUS_OPTIONS else 0,
+                format_func=lambda s: STATUS_LABELS.get(s, s))
+            due = st.date_input("Due date", value=pd.to_datetime(iv_row["due_date"]).date())
+            outcome = st.text_area("Outcome / notes", value=iv_row["outcome"] or "")
+            save_col, del_col = st.columns(2)
+            save = save_col.form_submit_button("💾 Save changes", use_container_width=True)
+            delete = del_col.form_submit_button("🗑️ Delete this action", use_container_width=True)
+        if save:
+            update_intervention(iv_id, action_type=action_type, status=status, due_date=due, outcome=outcome or None)
+            st.session_state["data_entry_message"] = f"Updated action #{iv_id}."
+            refresh_and_rerun()
+        if delete:
+            delete_intervention(iv_id)
+            st.session_state["data_entry_message"] = f"Deleted action #{iv_id}."
+            refresh_and_rerun()
+
 
 # --- Parent Calls page ---------------------------------------------------------
 
 def render_parent_calls(user: dict) -> None:
+    flash = st.session_state.pop("data_entry_message", None)
+    if flash:
+        st.success(flash)
+
     computed = get_computed()
     risk_df = computed["risk_df"]
-    mine = risk_df[(risk_df["facilitator_email"] == user["email"]) & (risk_df["recommended_action"] == "PARENT_CALL")]
-    mine = mine.sort_values("priority_score", ascending=False)
+    interventions_df = computed["interventions_df"]
+    mine_df = risk_df[risk_df["facilitator_email"] == user["email"]]
+    candidates = mine_df[mine_df["recommended_action"] == "PARENT_CALL"].copy()
 
-    st.title("📞 Parents to Contact Today")
-    if mine.empty:
-        st.success("No urgent parent calls needed right now.")
-    for _, row in mine.iterrows():
-        with st.container(border=True):
-            st.markdown(f"**{row['student_name']}** {risk_badge(row['risk_level'])}", unsafe_allow_html=True)
-            st.caption(row["action_brief"])
-            if st.button("🧠 Generate Call Brief", key=f"brief_{row['student_id']}"):
-                brief, _ = llm_mod.generate_parent_call_brief({
-                    "student_id": row["student_id"], "first_name": row["student_name"].split()[0],
-                    "concern": row["action_brief"], "supporting_data": "; ".join(row["reason_codes"]),
-                    "recommended_action": row["next_step"], "positive_fact": None,
-                })
-                st.session_state[f"brief_text_{row['student_id']}"] = brief
+    def current_status(sid: str) -> str:
+        iv = open_intervention_for(interventions_df, sid)
+        return iv["status"] if iv else "recommended"
 
-            brief = st.session_state.get(f"brief_text_{row['student_id']}")
-            if brief:
-                for key in ["opening", "positive_fact", "concern", "supporting_data",
-                            "recommended_action", "question_for_parent", "next_agreed_step"]:
-                    st.write(f"**{key.replace('_', ' ').title()}:** {brief[key]}")
+    candidates["_status"] = candidates["student_id"].apply(current_status)
+    to_call = candidates[candidates["_status"].isin({"recommended", "no_answer"})].sort_values(
+        "priority_score", ascending=False)
+    done = candidates[candidates["_status"].isin(outputs_mod.SUCCESS_STATUSES | {"follow_up_required"})]
 
-                with st.form(f"call_outcome_{row['student_id']}"):
-                    reached = st.radio("Outcome", ["Reached", "No answer"], horizontal=True,
-                                        key=f"reached_{row['student_id']}")
-                    parent_response = st.text_input("Parent response (if reached)", key=f"resp_{row['student_id']}")
-                    agreed_action = st.text_input("Agreed action", key=f"agreed_{row['student_id']}")
-                    follow_up = st.date_input("Follow-up date", value=SETTINGS.as_of_date + timedelta(days=2),
-                                               key=f"fu_{row['student_id']}")
-                    submit = st.form_submit_button("💾 Record call outcome")
-                if submit:
-                    status = "follow_up_required" if reached == "Reached" else "no_answer"
-                    outcome = f"reached={reached=='Reached'}; response={parent_response}; agreed={agreed_action}; follow_up={follow_up}"
-                    set_intervention_status(row["student_id"], user["email"], "PARENT_CALL", row["risk_level"],
-                                             row["due_date"], status, outcome)
-                    refresh_and_rerun()
+    st.title("📞 Parent Calls")
+    tabs = st.tabs([f"📞 To Call ({len(to_call)})", f"✅ Done ({len(done)})"])
+
+    with tabs[0]:
+        if to_call.empty:
+            st.success("No urgent parent calls needed right now.")
+        for _, row in to_call.iterrows():
+            with st.container(border=True):
+                retry_tag = " · 🔇 previous attempt: no answer" if row["_status"] == "no_answer" else ""
+                st.markdown(f"**{row['student_name']}** {risk_badge(row['risk_level'])}{retry_tag}",
+                            unsafe_allow_html=True)
+                st.caption(row["action_brief"])
+                if st.button("🧠 Generate Call Brief", key=f"brief_{row['student_id']}"):
+                    brief, _ = llm_mod.generate_parent_call_brief({
+                        "student_id": row["student_id"], "first_name": row["student_name"].split()[0],
+                        "concern": row["action_brief"], "supporting_data": "; ".join(row["reason_codes"]),
+                        "recommended_action": row["next_step"], "positive_fact": None,
+                    })
+                    st.session_state[f"brief_text_{row['student_id']}"] = brief
+
+                brief = st.session_state.get(f"brief_text_{row['student_id']}")
+                if brief:
+                    for key in ["opening", "positive_fact", "concern", "supporting_data",
+                                "recommended_action", "question_for_parent", "next_agreed_step"]:
+                        st.write(f"**{key.replace('_', ' ').title()}:** {brief[key]}")
+
+                    with st.form(f"call_outcome_{row['student_id']}"):
+                        reached = st.radio("Outcome", ["Reached", "No answer"], horizontal=True,
+                                            key=f"reached_{row['student_id']}")
+                        parent_response = st.text_input("Parent response (if reached)", key=f"resp_{row['student_id']}")
+                        agreed_action = st.text_input("Agreed action", key=f"agreed_{row['student_id']}")
+                        schedule_followup = st.checkbox("📅 Schedule a follow-up call", key=f"sfu_{row['student_id']}")
+                        follow_up = st.date_input("Follow-up date", value=SETTINGS.as_of_date + timedelta(days=2),
+                                                   key=f"fu_{row['student_id']}")
+                        submit = st.form_submit_button("💾 Record call outcome")
+                    if submit:
+                        was_reached = reached == "Reached"
+                        # Reaching the parent IS the successful interaction —
+                        # it moves straight to "completed" (and the Done tab)
+                        # rather than sitting in a permanent "follow-up
+                        # required" limbo that never counted toward the
+                        # interaction rate and never looked "done" anywhere.
+                        status = "completed" if was_reached else "no_answer"
+                        outcome = f"reached={was_reached}; response={parent_response}; agreed={agreed_action}"
+                        set_system_intervention_status(row["student_id"], user["email"], "PARENT_CALL",
+                                                        row["risk_level"], row["due_date"], status, outcome)
+                        if was_reached and schedule_followup:
+                            add_manual_intervention(
+                                row["student_id"], user["email"], "PARENT_CALL", row["risk_level"], follow_up,
+                                "recommended", outcome=f"Follow-up to the {SETTINGS.as_of_date} call: {agreed_action}")
+                        st.session_state["data_entry_message"] = (
+                            f"Call with {row['student_name']}'s parent recorded as "
+                            f"{'reached — moved to Done' if was_reached else 'no answer — stays in To Call for retry'}."
+                        )
+                        refresh_and_rerun()
+
+    with tabs[1]:
+        if done.empty:
+            st.info("Nothing completed yet today.")
+        for _, row in done.sort_values("priority_score", ascending=False).iterrows():
+            iv = open_intervention_for(interventions_df, row["student_id"])
+            with st.container(border=True):
+                st.markdown(f"**{row['student_name']}** {status_chip(row['_status'])}", unsafe_allow_html=True)
+                if iv and iv.get("outcome"):
+                    st.caption(iv["outcome"])
+
+    st.divider()
+    render_log_action_form(user, mine_df[["student_id", "student_name", "risk_level"]],
+                            key_prefix="parentcalls", default_action_type="PARENT_CALL")
 
 
 # --- Calendar / booking page ---------------------------------------------------
 
+CAL_STATUS_STYLES = {
+    # (background, text color, border) per slot status — booked reads as a
+    # solid accent-filled chip (like a confirmed Google Calendar event),
+    # open as a dashed placeholder (a proposed-but-unconfirmed option),
+    # completed green, cancelled struck through and muted.
+    "open": ("var(--surface-raised)", "var(--ink-secondary)", "1px dashed var(--border)"),
+    "booked": ("var(--accent)", "#ffffff", "1px solid var(--accent)"),
+    "completed": ("#0ca30c", "#ffffff", "1px solid #0ca30c"),
+    "cancelled": ("var(--surface)", "var(--ink-muted)", "1px solid var(--border)"),
+}
+
+CAL_GRID_CSS = """
+<style>
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin: 4px 0 20px 0; }
+.cal-dow { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+           color: var(--ink-muted); text-align: center; padding-bottom: 4px; }
+.cal-day { min-height: 110px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+           padding: 6px; position: relative; overflow: hidden; }
+.cal-day--other-month { opacity: 0.35; }
+.cal-day--today { border: 1px solid var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.cal-day--selected { background: var(--surface-raised); }
+.cal-daynum { font-size: 12px; font-weight: 700; color: var(--ink-primary); text-decoration: none;
+              display: inline-block; margin-bottom: 4px; }
+.cal-daynum:hover { color: var(--accent); }
+.cal-event { font-size: 10.5px; padding: 2px 5px; border-radius: 5px; margin-bottom: 3px; white-space: nowrap;
+             overflow: hidden; text-overflow: ellipsis; cursor: default; }
+.cal-more { display: block; font-size: 10px; color: var(--ink-muted); text-decoration: none; margin-top: 2px; }
+.cal-more:hover { color: var(--accent); }
+</style>
+"""
+
+
+def build_month_calendar_html(events_by_date: dict[date, list[dict]], year: int, month: int, today: date,
+                               selected_day: str | None) -> str:
+    """A Google-Calendar-style month grid built from plain HTML/CSS (no
+    Streamlit calendar widget exists) — each day cell lists that day's
+    booking slots as small chips: time + guest (student) name visible,
+    full topic/guest/status in the hover tooltip. Purely visual (a raw
+    <a href="?..."> inside this block gets its query string stripped by
+    Streamlit's own client-side routing before Python ever sees it, so
+    real day-click filtering is a separate native st.selectbox below the
+    grid instead — this function only needs to highlight the day that
+    selectbox currently has chosen)."""
+    weeks = calendar_mod.Calendar(firstweekday=0).monthdatescalendar(year, month)
+    dow_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    parts = ['<div class="cal-grid">']
+    for label in dow_labels:
+        parts.append(f'<div class="cal-dow">{label}</div>')
+
+    for week in weeks:
+        for day in week:
+            classes = ["cal-day"]
+            if day.month != month:
+                classes.append("cal-day--other-month")
+            if day == today:
+                classes.append("cal-day--today")
+            if selected_day and day.isoformat() == selected_day:
+                classes.append("cal-day--selected")
+            day_events = sorted(events_by_date.get(day, []), key=lambda e: e["time"])
+            parts.append(f'<div class="{" ".join(classes)}">')
+            parts.append(f'<div class="cal-daynum">{day.day}</div>')
+            for ev in day_events[:3]:
+                bg, fg, border = CAL_STATUS_STYLES.get(ev["status"], CAL_STATUS_STYLES["open"])
+                strike = "text-decoration:line-through;" if ev["status"] == "cancelled" else ""
+                tooltip = html_lib.escape(f"{ev['topic']} — Guest: {ev['guest']} at {ev['time']} ({ev['status']})")
+                label = html_lib.escape(f"{ev['time']} {ev['guest'].split()[0]}")
+                parts.append(
+                    f'<div class="cal-event" title="{tooltip}" '
+                    f'style="background:{bg};color:{fg};border:{border};{strike}">{label}</div>'
+                )
+            if len(day_events) > 3:
+                parts.append(f'<div class="cal-more">+{len(day_events) - 3} more</div>')
+            parts.append("</div>")
+    parts.append("</div>")
+    return "".join(parts)
+
+
 def render_calendar(user: dict) -> None:
+    flash = st.session_state.pop("data_entry_message", None)
+    if flash:
+        st.success(flash)
+
     computed = get_computed()
     risk_df = computed["risk_df"]
     mine = risk_df[risk_df["facilitator_email"] == user["email"]] if user["role"] != "admin" else risk_df
 
     st.title("📅 Calendar & 1-on-1 Booking")
+
+    # --- Month grid: every slot this facilitator has, on its actual date,
+    # like a Google Calendar month view. Query once here and reuse the same
+    # rows for the grid AND the "My sessions" list below.
+    with session_scope() as session:
+        all_slots = session.scalars(
+            select(AvailabilitySlot).where(AvailabilitySlot.facilitator_email == user["email"])
+            .order_by(AvailabilitySlot.start_time)
+        ).all()
+        slot_data = [{"id": s.id, "token": s.booking_token, "student_id": s.student_id, "topic": s.topic,
+                      "start_time": s.start_time, "status": s.status, "intervention_id": s.intervention_id}
+                     for s in all_slots]
+
+    events_by_date: dict[date, list[dict]] = {}
+    for s in slot_data:
+        student_row = risk_df[risk_df["student_id"] == s["student_id"]]
+        guest = student_row.iloc[0]["student_name"] if not student_row.empty else s["student_id"]
+        start = pd.to_datetime(s["start_time"])
+        events_by_date.setdefault(start.date(), []).append({
+            "time": start.strftime("%H:%M"), "topic": s["topic"], "guest": guest, "status": s["status"],
+        })
+
+    # The grid itself only shows approved sessions — a student hasn't
+    # confirmed an "open" time option yet, and a "cancelled" one was
+    # rejected, so neither is a real event on the calendar. Day filtering
+    # for "My sessions" below still covers every status, open ones included,
+    # so nothing pending becomes invisible to manage — just to glance at.
+    grid_events_by_date = {
+        day: approved for day, evs in events_by_date.items()
+        if (approved := [e for e in evs if e["status"] in ("booked", "completed")])
+    }
+
+    today = SETTINGS.as_of_date
+    st.session_state.setdefault("cal_year", today.year)
+    st.session_state.setdefault("cal_month", today.month)
+
+    nav = st.columns([1, 3, 1])
+    if nav[0].button("◀ Prev", use_container_width=True):
+        y, m = st.session_state["cal_year"], st.session_state["cal_month"] - 1
+        if m == 0:
+            y, m = y - 1, 12
+        st.session_state["cal_year"], st.session_state["cal_month"] = y, m
+        st.rerun()
+    nav[1].markdown(
+        f"<div style='text-align:center; font-weight:700; font-size:18px; padding-top:6px;'>"
+        f"{calendar_mod.month_name[st.session_state['cal_month']]} {st.session_state['cal_year']}</div>",
+        unsafe_allow_html=True)
+    if nav[2].button("Next ▶", use_container_width=True):
+        y, m = st.session_state["cal_year"], st.session_state["cal_month"] + 1
+        if m == 13:
+            y, m = y + 1, 1
+        st.session_state["cal_year"], st.session_state["cal_month"] = y, m
+        st.rerun()
+
+    # Read the filter's last known value before the widget itself is
+    # declared (further down, right above "My sessions") purely so the grid
+    # can highlight the matching day in this same render pass — Streamlit
+    # already updates session_state before a rerun starts, so this stays
+    # in sync with the widget regardless of script order.
+    day_options = ["All days"] + sorted(d.isoformat() for d in events_by_date.keys())
+    selected_day = st.session_state.get("cal_day_filter") or None
+    if selected_day == "All days":
+        selected_day = None
+
+    st.markdown(CAL_GRID_CSS, unsafe_allow_html=True)
+    st.markdown(build_month_calendar_html(grid_events_by_date, st.session_state["cal_year"],
+                                           st.session_state["cal_month"], today, selected_day),
+                unsafe_allow_html=True)
+    st.caption("🟦 Booked · 🟩 Completed — pending/cancelled time options aren't shown here; "
+               "see 'My sessions' below to manage those.")
+
+    st.divider()
     st.subheader("➕ Create availability")
     priority_students = mine.sort_values("priority_score", ascending=False)
+
+    # n_slots lives OUTSIDE the form on purpose: a widget inside a form only
+    # takes effect when the form itself is submitted, so bumping this
+    # number never actually revealed more date/time pickers until the whole
+    # form was submitted — this needs to rerun immediately, which a form
+    # field can't do.
+    n_slots = st.number_input("Number of time options to offer", 1, 5, 2, key="calendar_n_slots")
+
     with st.form("create_slots"):
         student_label = st.selectbox("Student", priority_students["student_id"] + " — " + priority_students["student_name"])
         topic = st.text_input("Topic", value="Quiz 2 prep session")
-        n_slots = st.number_input("Number of time options to offer", 1, 5, 2)
         slot_inputs = []
         for i in range(int(n_slots)):
             c1, c2 = st.columns(2)
@@ -935,30 +1489,105 @@ def render_calendar(user: dict) -> None:
     if submitted:
         sid = student_label.split(" — ")[0]
         batch_token = secrets.token_urlsafe(8)
+        priority_row = priority_students[priority_students["student_id"] == sid]
+        priority = priority_row.iloc[0]["risk_level"] if not priority_row.empty else "Medium"
+        earliest_date = min(d for d, _t in slot_inputs)
+        # Recorded as an intervention immediately — a proposed booking is
+        # real facilitator work, not just calendar bookkeeping, and this is
+        # what makes it show up in Actions/My Day right away rather than
+        # only after a student confirms a time via the public link.
+        iv_id = add_manual_intervention(sid, user["email"], "ONE_TO_ONE_TUTORING", priority, earliest_date,
+                                        "recommended", outcome=f"1-on-1 session proposed: {topic}")
         with session_scope() as session:
             for d, t in slot_inputs:
                 start = datetime.combine(d, t)
                 session.add(AvailabilitySlot(
                     facilitator_email=user["email"], topic=topic, start_time=start,
-                    end_time=start + timedelta(minutes=45), booking_token=batch_token, student_id=sid, status="open",
+                    end_time=start + timedelta(minutes=45), booking_token=batch_token, student_id=sid,
+                    status="open", intervention_id=iv_id,
                 ))
         link = f"http://localhost:{SETTINGS.app_port}/?book={batch_token}"
-        st.success("Availability created.")
+        get_computed(force=True)
+        st.success("Availability created and added to your Actions queue.")
         st.code(link)
 
-    st.subheader("📋 My slots")
-    with session_scope() as session:
-        slots = session.scalars(
-            select(AvailabilitySlot).where(AvailabilitySlot.facilitator_email == user["email"])
-            .order_by(AvailabilitySlot.start_time)
-        ).all()
-        slot_rows = [{"student_id": s.student_id, "topic": s.topic, "start": s.start_time, "status": s.status,
-                      "link": f"http://localhost:{SETTINGS.app_port}/?book={s.booking_token}"} for s in slots]
-    if slot_rows:
-        slots_df = pd.DataFrame(slot_rows)
-        st.dataframe(slots_df, use_container_width=True, column_config=with_column_help(slots_df))
-    else:
+    st.subheader("📋 My sessions")
+    if not slot_data:
         st.write("No availability created yet.")
+        return
+
+    chosen = st.selectbox("📌 Filter by day", day_options, key="cal_day_filter")
+    selected_day = None if chosen == "All days" else chosen
+
+    df_slots = pd.DataFrame(slot_data)
+    if selected_day:
+        tokens_on_day = df_slots[pd.to_datetime(df_slots["start_time"]).dt.date.astype(str) == selected_day]["token"].unique()
+        df_slots = df_slots[df_slots["token"].isin(tokens_on_day)]
+        if df_slots.empty:
+            st.info("No sessions on that day.")
+            return
+
+    for token, group in df_slots.groupby("token", sort=False):
+        first = group.iloc[0]
+        student_row = risk_df[risk_df["student_id"] == first["student_id"]]
+        student_name = student_row.iloc[0]["student_name"] if not student_row.empty else first["student_id"]
+        with st.container(border=True):
+            st.markdown(f"**{student_name}** — {first['topic']}")
+            for _, s in group.iterrows():
+                cols = st.columns([3, 2])
+                cols[0].write(pd.to_datetime(s["start_time"]).strftime("%a %Y-%m-%d %H:%M"))
+                cols[1].markdown(f'<span class="status-chip">{s["status"]}</span>', unsafe_allow_html=True)
+            st.code(f"http://localhost:{SETTINGS.app_port}/?book={token}")
+
+            open_slots = group[group["status"] == "open"]
+            booked_slots = group[group["status"] == "booked"]
+            iv_id = int(first["intervention_id"]) if pd.notna(first["intervention_id"]) else None
+            can_finish = not booked_slots.empty or not open_slots.empty
+            can_cancel = not open_slots.empty
+
+            btn_cols = st.columns(3)
+            if can_finish and btn_cols[0].button("✅ Mark session done", key=f"batch_done_{token}"):
+                target_ids = (booked_slots["id"].tolist() or open_slots["id"].tolist())[:1]
+                with session_scope() as session:
+                    for target_id in target_ids:
+                        slot = session.get(AvailabilitySlot, int(target_id))
+                        if slot:
+                            slot.status = "completed"
+                if iv_id:
+                    update_intervention(iv_id, status="completed",
+                                         outcome=f"1-on-1 session completed: {first['topic']}")
+                st.session_state["data_entry_message"] = f"Marked the session with {student_name} as done."
+                refresh_and_rerun()
+            if can_cancel and btn_cols[1].button("✏️ Edit first time option", key=f"batch_edit_{token}"):
+                st.session_state[f"editing_batch_{token}"] = not st.session_state.get(f"editing_batch_{token}", False)
+            if can_cancel and btn_cols[2].button("❌ Cancel remaining", key=f"batch_cancel_{token}"):
+                with session_scope() as session:
+                    for open_id in open_slots["id"].tolist():
+                        slot = session.get(AvailabilitySlot, int(open_id))
+                        if slot:
+                            slot.status = "cancelled"
+                if iv_id and booked_slots.empty:
+                    delete_intervention(iv_id)
+                st.session_state["data_entry_message"] = f"Cancelled the remaining open time options for {student_name}."
+                refresh_and_rerun()
+
+            if st.session_state.get(f"editing_batch_{token}") and can_cancel:
+                first_open_id = int(open_slots.iloc[0]["id"])
+                current_start = pd.to_datetime(open_slots.iloc[0]["start_time"])
+                with st.form(f"edit_batch_form_{token}"):
+                    nd = st.date_input("New date", value=current_start.date(), key=f"nd_{token}")
+                    nt = st.time_input("New time", value=current_start.time(), key=f"nt_{token}")
+                    save = st.form_submit_button("💾 Save new time")
+                if save:
+                    new_start = datetime.combine(nd, nt)
+                    with session_scope() as session:
+                        slot = session.get(AvailabilitySlot, first_open_id)
+                        if slot:
+                            slot.start_time = new_start
+                            slot.end_time = new_start + timedelta(minutes=45)
+                    st.session_state[f"editing_batch_{token}"] = False
+                    st.session_state["data_entry_message"] = f"Rescheduled the session with {student_name}."
+                    refresh_and_rerun()
 
 
 def render_public_booking(token: str) -> None:
@@ -977,18 +1606,223 @@ def render_public_booking(token: str) -> None:
         labels = [s.start_time.strftime("%a %Y-%m-%d %H:%M") for s in slots]
         choice_idx = st.radio("Choose a time", range(len(slots)), format_func=lambda i: labels[i])
         if st.button("✅ Confirm booking", type="primary"):
-            chosen_id = slots[choice_idx].id
+            chosen = slots[choice_idx]
+            chosen_iv_id, chosen_date = chosen.intervention_id, chosen.start_time.date()
             for s in slots:
-                if s.id == chosen_id:
-                    s.status = "booked"
-                else:
-                    s.status = "cancelled"
-            session.add(Intervention(
-                student_id=slots[0].student_id, facilitator_email=slots[0].facilitator_email,
-                action_type="ONE_TO_ONE_TUTORING", priority="Medium", due_date=slots[0].start_time.date(),
-                status="booked",
-            ))
+                s.status = "booked" if s.id == chosen.id else "cancelled"
+            # The batch's manual intervention row was already created when
+            # the facilitator proposed these times — this just moves it to
+            # "booked" rather than spawning a second, disconnected row.
+            iv = session.get(Intervention, chosen_iv_id) if chosen_iv_id else None
+            if iv is not None:
+                iv.status = "booked"
+                iv.due_date = chosen_date
+            else:
+                session.add(Intervention(
+                    student_id=chosen.student_id, facilitator_email=chosen.facilitator_email,
+                    action_type="ONE_TO_ONE_TUTORING", priority="Medium", due_date=chosen_date,
+                    status="booked", source="manual",
+                ))
             st.success("Booking confirmed! Your facilitator will see this on their calendar.")
+
+
+# --- AI chatbot page ------------------------------------------------------------
+
+def _mentioned_students(question: str, df: pd.DataFrame) -> pd.DataFrame:
+    """The actual retrieval step of the RAG pipeline: if the question names
+    a specific student (by id, or by a distinctive part of their name),
+    pull that row out for full-detail grounding — on top of the roster-wide
+    summary every question gets. Matching a whole name part (not the raw
+    substring) avoids false hits from short, common tokens."""
+    q = question.lower()
+    if not q.strip():
+        return df.iloc[0:0]
+
+    def mentioned(row) -> bool:
+        if row["student_id"].lower() in q:
+            return True
+        return any(part.lower() in q for part in str(row["student_name"]).split() if len(part) >= 3)
+
+    return df[df.apply(mentioned, axis=1)]
+
+
+def build_chat_context(user: dict, computed: dict, question: str = "") -> str:
+    """Digests the caller's own live system data into plain text for the
+    chatbot's system prompt — the same computed tables the rest of the UI
+    reads, so the AI can never answer with anything the facilitator/admin
+    couldn't already see on some other page. Any student named in the
+    question gets a full-detail block (patterns, trusted notes, full
+    intervention history) retrieved on top of the roster-wide summary —
+    the retrieval half of a RAG pipeline sized to this dataset."""
+    risk_df = computed["risk_df"]
+    interventions_df = computed["interventions_df"]
+    notes_df = computed["notes_df"]
+    df = risk_df if user["role"] == "admin" else risk_df[risk_df["facilitator_email"] == user["email"]]
+    my_interventions = interventions_df[interventions_df["student_id"].isin(df["student_id"])]
+    coverage = outputs_mod.coverage_metrics(df, my_interventions, SETTINGS.as_of_date, TARGET_COVERAGE)
+
+    def current_status(sid: str) -> str:
+        iv = open_intervention_for(my_interventions, sid)
+        return iv["status"] if iv else "recommended"
+
+    lines = [
+        f"Viewer role: {user['role']} ({user['display_name']}, {user['email']}).",
+        f"As of Day {SETTINGS.days_since_quiz1 + 10}, {SETTINGS.days_until_quiz2} days until Quiz 2.",
+        f"Students in view: {len(df)}. At-risk/needing intervention: {coverage['students_needing_intervention']} "
+        f"total, of which {coverage['students_still_needing_intervention']} still have no completed/sent/booked "
+        f"interaction yet (the rest, {coverage['successful_interaction_count']}, already do).",
+        f"Successful interaction rate: {coverage['successful_interaction_rate']}% (target 80%). "
+        f"Overdue intervention rate: {coverage['overdue_intervention_rate']}%.",
+        f"Risk distribution: {df['risk_level'].value_counts().to_dict()}.",
+    ]
+
+    matched = _mentioned_students(question, df)
+    if not matched.empty:
+        lines.append("")
+        lines.append("STUDENT(S) SPECIFICALLY NAMED IN THIS QUESTION (full detail, use this over the roster line):")
+        for _, r in matched.iterrows():
+            sid = r["student_id"]
+            trusted = notes_df[(notes_df["student_id"] == sid) & (notes_df["trust_status"] == "trusted")]
+            note_summaries = "; ".join(n for n in trusted["ai_summary"].dropna().tolist()) or "none recorded"
+            student_ivs = my_interventions[my_interventions["student_id"] == sid]
+            iv_summary = "; ".join(
+                f"{iv['action_type']}={iv['status']} (due {iv['due_date']})" for _, iv in student_ivs.iterrows()
+            ) or "none recorded"
+            patterns = r["patterns"] if isinstance(r["patterns"], list) else []
+            pattern_summary = "; ".join(p["explanation"] for p in patterns) or "none detected"
+            lines.append(
+                f"- {sid} {r['student_name']}: risk={r['risk_level']} (score {r['risk_score']:.1f}/100), "
+                f"quiz1={r['quiz1_score']}/target={r['target_score']:.0f}, campus={r['campus_id']}, "
+                f"facilitator={r['facilitator_email']}, recommended_action={r['recommended_action']}, "
+                f"current_status={current_status(sid)}, detected_patterns=[{pattern_summary}], "
+                f"trusted_note_summaries=[{note_summaries}], intervention_history=[{iv_summary}]"
+            )
+
+    lines.append("")
+    lines.append("Full roster (id | name | risk | priority | quiz1 vs target | recommended action | due date | "
+                  "current status | campus | facilitator):")
+    for _, r in df.sort_values("priority_score", ascending=False).head(200).iterrows():
+        lines.append(
+            f"- {r['student_id']} | {r['student_name']} | {r['risk_level']} | {r['priority_score']:.0f} | "
+            f"{r['quiz1_score']}/{r['target_score']:.0f} | {r['recommended_action']} | {r['due_date']} | "
+            f"{current_status(r['student_id'])} | {r['campus_id']} | {r['facilitator_email']}"
+        )
+    return "\n".join(lines)
+
+
+def render_chatbot(user: dict) -> None:
+    eyebrow("AI ASSISTANT")
+    st.title("🤖 Ask AI")
+    st.caption("Ask anything about your students or system data — grounded only in your live data below, never "
+               "invented. Conversations are saved on the left so you can switch, rename, delete, or continue them.")
+
+    # A ChatGPT-style shell built from plain Streamlit primitives: a
+    # conversation list on the left, message bubbles on the right. Only
+    # cosmetic — the CSS below just rounds/spaces the native chat-message
+    # bubbles to read less like a form and more like a chat.
+    st.markdown("""
+    <style>
+    div[data-testid="stChatMessage"] { border-radius: 14px; padding: 4px 4px; }
+    .chat-sidebar-title { font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em;
+                           text-transform: uppercase; color: var(--ink-muted); margin: 10px 0 6px 2px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    with session_scope() as session:
+        sessions = chat_sessions_for(session, user["email"])
+        session_options = [(s.id, s.title) for s in sessions]
+
+    active_key = "chat_active_session_id"
+    if session_options and st.session_state.get(active_key) not in [i for i, _ in session_options]:
+        st.session_state[active_key] = session_options[0][0]
+    if not session_options:
+        st.session_state.pop(active_key, None)
+
+    sidebar_col, chat_col = st.columns([1, 2.6], gap="medium")
+
+    with sidebar_col:
+        if st.button("➕ New chat", use_container_width=True, type="primary", key="chat_new_btn"):
+            with session_scope() as session:
+                new_chat = ChatSession(user_email=user["email"], title="New chat")
+                session.add(new_chat)
+                session.flush()
+                new_id = new_chat.id
+            st.session_state[active_key] = new_id
+            st.session_state.pop("chat_renaming", None)
+            st.rerun()
+
+        st.markdown('<div class="chat-sidebar-title">Conversations</div>', unsafe_allow_html=True)
+        if not session_options:
+            st.caption("No conversations yet — start one above.")
+        with st.container(height=360):
+            for sid, title in session_options:
+                is_active = sid == st.session_state.get(active_key)
+                label = f"{'💬 ' if is_active else '　 '}{title or 'New chat'}"
+                if st.button(label, key=f"chat_switch_{sid}", use_container_width=True,
+                             type="primary" if is_active else "secondary"):
+                    st.session_state[active_key] = sid
+                    st.session_state.pop("chat_renaming", None)
+                    st.rerun()
+
+        if session_options:
+            active_id = st.session_state[active_key]
+            rename_col, delete_col = st.columns(2)
+            if rename_col.button("✏️ Rename", use_container_width=True, key="chat_rename_toggle"):
+                st.session_state["chat_renaming"] = not st.session_state.get("chat_renaming", False)
+            if delete_col.button("🗑️ Delete", use_container_width=True, key="chat_delete_btn"):
+                with session_scope() as session:
+                    session.query(ChatMessage).filter(ChatMessage.session_id == active_id).delete()
+                    session.query(ChatSession).filter(ChatSession.id == active_id).delete()
+                st.session_state.pop(active_key, None)
+                st.session_state.pop("chat_renaming", None)
+                st.rerun()
+            if st.session_state.get("chat_renaming"):
+                with st.form("rename_chat_form"):
+                    current_title = dict(session_options).get(active_id, "")
+                    new_title = st.text_input("New title", value=current_title, label_visibility="collapsed",
+                                               placeholder="Conversation title")
+                    if st.form_submit_button("💾 Save", use_container_width=True):
+                        with session_scope() as session:
+                            chat = session.get(ChatSession, active_id)
+                            if chat:
+                                chat.title = new_title or chat.title
+                        st.session_state["chat_renaming"] = False
+                        st.rerun()
+
+    with chat_col:
+        if not session_options:
+            st.info("👋 Start a new conversation from the left to begin.")
+            return
+
+        active_id = st.session_state[active_key]
+        with session_scope() as session:
+            messages = chat_messages_for(session, active_id)
+
+        with st.container(height=460):
+            if not messages:
+                st.caption("💡 Ask about risk levels, coverage, overdue actions, or a specific student by name.")
+            for m in messages:
+                avatar = "🧑‍🏫" if m.role == "user" else "🤖"
+                with st.chat_message(m.role, avatar=avatar):
+                    st.write(m.content)
+
+    question = st.chat_input("Message Ask AI...")
+    if question and session_options:
+        active_id = st.session_state[active_key]
+        with session_scope() as session:
+            session.add(ChatMessage(session_id=active_id, role="user", content=question))
+            chat = session.get(ChatSession, active_id)
+            if chat and chat.title == "New chat":
+                chat.title = question[:48] + ("…" if len(question) > 48 else "")
+
+        computed = get_computed()
+        context_summary = build_chat_context(user, computed, question=question)
+        history = [{"role": m.role, "content": m.content} for m in messages]
+        with st.spinner("Thinking..."):
+            answer, _log = llm_mod.answer_chat_question(question, context_summary, history)
+        with session_scope() as session:
+            session.add(ChatMessage(session_id=active_id, role="assistant", content=answer))
+        st.rerun()
 
 
 # --- Data Entry page -----------------------------------------------------------
@@ -1303,6 +2137,7 @@ FACILITATOR_TOUR = [
     ("📞", "Parent Calls", "Today's parent-call queue, with an AI-drafted talking-points brief for each call."),
     ("📅", "Calendar", "Create 1-on-1 booking slots for a student and share the link — no login needed to book."),
     ("📝", "Data Entry", "Log a metric by hand, or bulk-import a CSV of attendance/practice data."),
+    ("🤖", "Ask AI", "Chat with an AI grounded in your own live data — saved as renameable conversations."),
 ]
 ADMIN_TOUR = [
     ("📊", "Overview", "System-wide KPIs, risk distribution, and progress toward the 80% coverage target."),
@@ -1310,6 +2145,7 @@ ADMIN_TOUR = [
     ("🧑‍🏫", "Facilitators", "See each facilitator's workload and create new facilitator accounts."),
     ("🧑‍🎓", "Students", "Browse every student and add or edit a record."),
     ("🧪", "Data Quality", "Every issue the pipeline found in the source CSVs — nothing is hidden."),
+    ("🤖", "Ask AI", "Chat with an AI grounded in system-wide live data — saved as renameable conversations."),
 ]
 
 
@@ -1321,9 +2157,7 @@ def render_onboarding_dialog(user: dict) -> None:
         st.markdown(f"**{icon} {name}** — {description}")
     st.divider()
     st.caption("You can reopen this tour anytime from the **❓ Help** button in the sidebar.")
-    if st.button("Got it — let's go 🚀", type="primary", use_container_width=True):
-        mark_onboarding_seen(user["email"])
-        st.session_state.user["has_seen_onboarding"] = True
+    if st.button("Got it — let's go 🚀", type="primary", use_container_width=True, key="onboarding_dismiss_btn"):
         st.rerun()
 
 
@@ -1347,13 +2181,24 @@ def main() -> None:
     st.sidebar.title("📚 Boon Academy")
     st.sidebar.caption(f"{role_icon} {user['display_name']} · {user['role'].title()}")
 
-    if not user.get("has_seen_onboarding"):
+    if not user.get("has_seen_onboarding") and not st.session_state.get("onboarding_dismissed_this_session"):
+        # Marked "seen" the instant we decide to show it — NOT inside the
+        # dialog's own "Got it" button handler. st.dialog renders its own
+        # native "X" close button that bypasses any button click entirely;
+        # closing via that X never ran our old handler, so has_seen_onboarding
+        # stayed False forever and the next rerun (any click anywhere)
+        # popped the dialog right back up. Setting the flag up front means
+        # it can never reappear this session no matter how it's closed.
+        mark_onboarding_seen(user["email"])
+        st.session_state.user["has_seen_onboarding"] = True
+        st.session_state["onboarding_dismissed_this_session"] = True
         render_onboarding_dialog(user)
 
     if user["role"] == "admin":
-        pages = ["Admin", "My Students", "Student Detail", "Actions", "Calendar"]
+        pages = ["Admin", "My Students", "Student Detail", "Actions", "Calendar", "Ask AI"]
     else:
-        pages = ["My Day", "My Students", "Student Detail", "Actions", "Parent Calls", "Calendar", "Data Entry"]
+        pages = ["My Day", "My Students", "Student Detail", "Actions", "Parent Calls", "Calendar",
+                  "Data Entry", "Ask AI"]
 
     # A button elsewhere in the app can request a page switch (e.g. "Open
     # Detail"), but Streamlit forbids writing to a widget-bound session_state
@@ -1391,6 +2236,8 @@ def main() -> None:
         render_calendar(user)
     elif choice == "Data Entry":
         render_data_entry(user)
+    elif choice == "Ask AI":
+        render_chatbot(user)
     elif choice == "Admin":
         render_admin(user)
 

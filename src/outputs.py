@@ -59,6 +59,13 @@ def coverage_metrics(risk_df: pd.DataFrame, interventions_df: pd.DataFrame, as_o
 
     return {
         "students_needing_intervention": n_needing,
+        # Distinct from the raw risk-based count above: this is "still
+        # outstanding" — students who need help AND don't yet have a
+        # successful interaction on record. It moves live as work gets
+        # done: completing one drops this by 1; deleting/reopening a
+        # completed action, or a new student becoming at-risk, raises it
+        # back up. This is what the My Day KPI shows, not the static count.
+        "students_still_needing_intervention": max(0, n_needing - successful_count),
         "recommendation_coverage": pct(has_any),
         "contact_attempt_rate": pct(has_attempt),
         "successful_interaction_rate": pct(has_success),
@@ -89,11 +96,20 @@ def write_jsonl(records: list[dict], path: Path) -> None:
 
 
 def build_risk_roster_df(risk_df: pd.DataFrame) -> pd.DataFrame:
+    """The single per-student output file — every column a facilitator or
+    admin needs, including the recommended action and its effort estimate.
+    A separate "facilitator worklist" file used to exist alongside this one,
+    but every one of its columns (student_id, student_name, due_date,
+    risk_level, next_step, and action_type/priority under different names)
+    was already here; the only new field was estimated_minutes, folded in
+    below. Two files describing the same rows under different column names
+    was confusing, not useful — this is the one canonical roster now."""
     cols = [
         "student_id", "student_name", "campus_id", "facilitator_email", "grade", "learning_track",
         "quiz1_score", "target_score", "gap_to_target", "below_target",
         "risk_score", "risk_level", "priority_score", "confidence", "urgency_score",
-        "reason_codes", "pattern_codes", "recommended_action", "action_priority", "due_date", "next_step",
+        "reason_codes", "pattern_codes", "recommended_action", "action_priority", "due_date",
+        "estimated_minutes", "next_step",
         "days_until_quiz2", "attendance_trend", "practice_trend",
         "quiz_percentile", "attendance_percentile", "practice_percentile",
     ]
@@ -101,12 +117,6 @@ def build_risk_roster_df(risk_df: pd.DataFrame) -> pd.DataFrame:
     df["reason_codes"] = df["reason_codes"].apply(lambda v: ";".join(v) if isinstance(v, list) else v)
     df["pattern_codes"] = df["pattern_codes"].apply(lambda v: ";".join(v) if isinstance(v, list) else v)
     return df
-
-
-def build_facilitator_worklist_df(risk_df: pd.DataFrame) -> pd.DataFrame:
-    cols = ["facilitator_email", "student_id", "student_name", "recommended_action", "action_priority",
-            "due_date", "estimated_minutes", "risk_level", "next_step"]
-    return risk_df[cols].rename(columns={"recommended_action": "action_type", "action_priority": "priority"}).copy()
 
 
 def print_console_summary(stats: dict, output_paths: list[str]) -> None:

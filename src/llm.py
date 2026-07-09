@@ -273,23 +273,39 @@ def generate_motivational_message(context: dict) -> tuple[str, LLMCallLog]:
     """context must contain only verified, already-computed facts — the
     model is asked to phrase them warmly, never to invent new ones.
     context["variant"] (default 0) lets "Regenerate" in the UI request a
-    genuinely different phrasing instead of hitting the same cache entry."""
+    genuinely different phrasing instead of hitting the same cache entry.
+
+    Beyond the original positive_fact/next_step, this accepts optional
+    grounding fields (days_until_quiz2, gap_to_target, risk_level,
+    attendance_trend, practice_trend) — real computed numbers the model is
+    told to weave in naturally instead of writing something generic enough
+    to apply to any student. Still governed by the same never-invent rule:
+    a field that's None/missing is simply omitted, never guessed."""
     first_name = context["first_name"]
     positive_fact = context.get("positive_fact")
     next_step = context["next_step"]
     variant = context.get("variant", 0)
+    days_until_quiz2 = context.get("days_until_quiz2")
+    gap_to_target = context.get("gap_to_target")
+    attendance_trend = context.get("attendance_trend")
+    practice_trend = context.get("practice_trend")
 
     def fallback() -> str:
         opener = _ARABIC_FALLBACK_OPENERS[variant % len(_ARABIC_FALLBACK_OPENERS)]
         closer = _ARABIC_FALLBACK_CLOSERS[variant % len(_ARABIC_FALLBACK_CLOSERS)]
         middle = f" {positive_fact}." if positive_fact else " نحن نتابع تقدمك ونؤمن فيك."
-        return f"{opener} {first_name}،{middle} خطوة بسيطة اليوم: {next_step}. {closer}"
+        urgency = f" باقي {days_until_quiz2} أيام على الاختبار الثاني." if days_until_quiz2 is not None else ""
+        return f"{opener} {first_name}،{middle}{urgency} خطوة بسيطة اليوم: {next_step}. {closer}"
 
     def call_fn() -> str:
         client = _client()
         system = (
             "You write a short motivational message in Arabic for a test-prep student, from their facilitator. "
             "Use ONLY the verified facts given — never invent personal circumstances, grades, or events. "
+            "Be genuinely specific and personal: when a days-until-next-quiz count, a score gap, or an "
+            "attendance/practice trend is given, weave it in naturally to create gentle urgency and show you're "
+            "tracking their real, current progress. A generic message that could apply to any student is a "
+            "failure — ground every message in whichever verified numbers are actually present. "
             "Tone: warm, non-judgmental, culturally appropriate, concise (2-3 sentences). "
             "Use the student's first name. Mention the positive fact if one is given. "
             "End with the one specific next step given. Output plain Arabic text only, no markdown. "
@@ -300,6 +316,10 @@ def generate_motivational_message(context: dict) -> tuple[str, LLMCallLog]:
             "first_name": first_name,
             "verified_positive_fact": positive_fact,
             "verified_next_step": next_step,
+            "days_until_next_quiz": days_until_quiz2,
+            "verified_score_gap_to_target": gap_to_target,
+            "verified_attendance_trend_minutes_per_day": attendance_trend,
+            "verified_practice_trend_questions_per_day": practice_trend,
         }, ensure_ascii=False)
         response = client.chat.completions.create(
             model=SETTINGS.openai_model,
@@ -313,7 +333,9 @@ def generate_motivational_message(context: dict) -> tuple[str, LLMCallLog]:
 
     return _run_with_fallback(
         "motivational_message", context.get("student_id"),
-        {"first_name": first_name, "positive_fact": positive_fact, "next_step": next_step, "variant": variant},
+        {"first_name": first_name, "positive_fact": positive_fact, "next_step": next_step, "variant": variant,
+         "days_until_quiz2": days_until_quiz2, "gap_to_target": gap_to_target,
+         "attendance_trend": attendance_trend, "practice_trend": practice_trend},
         call_fn, fallback,
     )
 
@@ -392,3 +414,58 @@ def generate_parent_report_summary(context: dict) -> tuple[str, LLMCallLog]:
         return text
 
     return _run_with_fallback("parent_report_summary", context.get("student_id"), context, call_fn, fallback)
+
+
+def answer_chat_question(question: str, context_summary: str, history: list[dict]) -> tuple[str, LLMCallLog]:
+    """Answers a facilitator's or admin's free-form question about their own
+    live system data (the 'Ask AI' chat tab). Grounded strictly in
+    `context_summary` — a text digest of the caller's own current roster/
+    risk/coverage/intervention data assembled by app.py from the same
+    computed tables the rest of the UI reads. The model is explicitly told
+    to say "I don't know from the data I have" rather than guess, and to
+    never invent a student, number, or status not present in the context."""
+
+    def fallback() -> str:
+        return ("I can't reach the AI service right now, so I can't answer that question. "
+                "Try again in a moment, or check the My Students / Actions / Admin pages directly for the same data.")
+
+    def call_fn() -> str:
+        client = _client()
+        system = (
+            "You are 'Ask AI', an assistant embedded in a student-intervention dashboard, answering a "
+            "facilitator's or admin's question about THEIR OWN live data.\n\n"
+            "RULES (follow strictly, in order):\n"
+            "1. Only state a student name, number, status, or date if it appears verbatim in the CONTEXT DATA "
+            "block below. Never invent, estimate, or round from memory — if it isn't in the context, you don't "
+            "know it, full stop.\n"
+            "2. If the question names a student who does NOT appear in the context, say plainly that you have "
+            "no data on them in the current view — never guess or assume they exist.\n"
+            "3. If the question is a greeting or small talk with no real data request (e.g. 'hey', 'hello', "
+            "'thanks', 'how are you'), reply briefly and naturally like a helpful colleague — do NOT dump "
+            "statistics or a data summary unless they actually asked for one.\n"
+            "4. If the context doesn't contain enough information to answer a genuine data question, say so "
+            "plainly and suggest which page in the app would have it (My Students, Actions, Student Detail, "
+            "Calendar, Admin) — never fill the gap with a plausible-sounding guess.\n"
+            "5. Be concise and practical — this is a working facilitator between tasks, not someone reading a "
+            "report. Prefer 1-4 sentences unless the question genuinely needs a list or table.\n\n"
+            f"--- CONTEXT DATA (live system snapshot — your ONLY source of facts) ---\n{context_summary}\n"
+            "--- END CONTEXT DATA ---"
+        )
+        messages = [{"role": "system", "content": system}]
+        for turn in history[-8:]:  # cap history sent per call — this is a chat, not a transcript dump
+            messages.append({"role": turn["role"], "content": turn["content"]})
+        messages.append({"role": "user", "content": question})
+        response = client.chat.completions.create(
+            model=SETTINGS.openai_model, messages=messages, temperature=0.15,
+        )
+        text = (response.choices[0].message.content or "").strip()
+        if not text:
+            raise ValueError("empty chat answer")
+        return text
+
+    cache_payload = {
+        "question": question,
+        "context_hash": hashlib.sha256(context_summary.encode()).hexdigest(),
+        "history_len": len(history),
+    }
+    return _run_with_fallback("chat_answer", None, cache_payload, call_fn, fallback)

@@ -18,7 +18,11 @@ make demo               # installs deps, runs the full pipeline, launches the ap
 
 **App URL:** http://localhost:8501
 
-**Outputs:** generated in `outputs/` (roster, worklists, dashboard, parent reports, etc.)
+**Outputs:** generated in `outputs/` — `student_risk_roster.csv` (per-student risk/priority/recommended action),
+`intervention_actions.csv` (every recorded action and its outcome), `pattern_summary.csv` (behavioral pattern
+rollup), `data_quality_report.json`, `llm_messages.jsonl` (LLM call audit log), `executive_summary.md` and
+`facilitator_dashboard.html` (narrative and visual snapshots), `run_summary.json` (machine-readable run manifest),
+and `parent_reports/` (a sample of generated parent reports).
 
 **Demo credentials** (from `.env`, created on first pipeline run):
 - Admin: `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` (default `admin@boonacademy.demo` / `Admin@2025`)
