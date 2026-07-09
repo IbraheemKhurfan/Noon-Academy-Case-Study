@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-09T12:31:32.671473+00:00",
+  "generated_at": "2026-07-09T13:48:40.669066+00:00",
   "config": {
     "data_dir": "data",
     "output_dir": "outputs",
@@ -11,7 +11,7 @@
     "notification_mode": "dry_run"
   },
   "stats": {
-    "generated_at": "2026-07-09T12:31:32.671473+00:00",
+    "generated_at": "2026-07-09T13:48:40.669066+00:00",
     "as_of_day": 14,
     "days_until_quiz2": 6,
     "total_students": 200,
@@ -21,27 +21,27 @@
     "below_target_pct": 99.5,
     "post_quiz_activity_pct": 13.5,
     "risk_counts": {
-      "Low": 129,
-      "Medium": 59,
-      "High": 11,
+      "Low": 134,
+      "Medium": 58,
+      "High": 7,
       "Critical": 1
     },
     "recommended_action_count": 200,
-    "llm_success_count": 113,
-    "llm_fallback_count": 0,
+    "llm_success_count": 11,
+    "llm_fallback_count": 24,
     "data_quality_issue_count": 5,
     "students_with_quality_flags": 51,
     "students_needing_intervention": 200,
-    "students_still_needing_intervention": 200,
+    "students_still_needing_intervention": 197,
     "recommendation_coverage": 100.0,
-    "contact_attempt_rate": 0.0,
-    "successful_interaction_rate": 0.0,
-    "completed_intervention_rate": 0.0,
+    "contact_attempt_rate": 2.0,
+    "successful_interaction_rate": 1.5,
+    "completed_intervention_rate": 1.0,
     "overdue_intervention_rate": 0.0,
     "projected_coverage": 27.0,
-    "successful_interaction_count": 0,
+    "successful_interaction_count": 3,
     "target_count": 160,
-    "additional_students_needed": 160
+    "additional_students_needed": 157
   },
   "output_files": [
     "data_quality_report.json",
