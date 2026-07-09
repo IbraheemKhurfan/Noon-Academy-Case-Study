@@ -28,4 +28,7 @@ and `parent_reports/` (a sample of generated parent reports).
 - Admin: `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` (default `admin@boonacademy.demo` / `Admin@2025`)
 - Facilitator: any `facilitator*@noon.com` from `data/student_metadata.csv` / `SEED_FACILITATOR_PASSWORD` (default `Coach@2025`)
 
-Loom walkthrough: <ADD LINK HERE>
+**Loom walkthrough:**
+1. https://www.loom.com/share/8b0ceb06e41b49e1baa923b586e6d1fb
+2. https://www.loom.com/share/72671c2b85574eea8603b5d69d21c848
+3. https://www.loom.com/share/0a2b4fda5cf549b2914fc313dd7ad7b3
