@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.config import FAILING_SCORE_THRESHOLD
+
 # Thresholds are simple, named constants so every rule is auditable at a glance.
 ACUTE_DROP_MIN_BASELINE = 45
 ACUTE_DROP_THRESHOLD = 30
@@ -31,7 +33,7 @@ LARGE_GAP_THRESHOLD = 20
 
 TRUST_IMPACTING_FLAGS = {
     "MISSING_ATTENDANCE", "ATTENDANCE_OUT_OF_RANGE", "NEGATIVE_PRACTICE",
-    "QUIZ_SCORE_DATE_ANOMALY", "NOTE_OWNERSHIP_CONFLICT",
+    "QUIZ_SCORE_DATE_ANOMALY", "NOTE_OWNERSHIP_CONFLICT", "NOTE_CONTENT_MISMATCH",
 }
 
 
@@ -117,6 +119,23 @@ def detect_patterns(f: dict) -> list[dict]:
             f"Attendance ({recent_att:.0f} min) and practice ({recent_prac:.0f} questions) are both healthy and "
             f"steady — no concerning change in behavior.",
             {"recent_attendance_min": round(recent_att, 1), "recent_practice_questions": round(recent_prac, 1)},
+        ))
+
+    # Failing is an absolute floor (below60/100), independent of this
+    # student's own target — a student scoring 55 with a target of 60 is a
+    # genuinely different, more urgent situation than one scoring 70 against
+    # a target of 95, even though the second student's gap-to-target is
+    # larger. Checked ahead of LARGE_TARGET_GAP so it takes priority as the
+    # headline "why" when both are true (which, in this cohort, is nearly
+    # always — every failing student is also below their own target).
+    quiz1_score = f.get("quiz1_score")
+    if quiz1_score is not None and quiz1_score < FAILING_SCORE_THRESHOLD:
+        patterns.append(_pattern(
+            "FAILING_QUIZ_SCORE",
+            f"Quiz 1 score of {quiz1_score:.0f}/100 is a failing score in absolute terms — this is true "
+            f"regardless of this student's individual target.",
+            {"quiz1_score": quiz1_score, "target_score": f.get("target_score"),
+             "failing_threshold": FAILING_SCORE_THRESHOLD},
         ))
 
     gap = f.get("gap_to_target")

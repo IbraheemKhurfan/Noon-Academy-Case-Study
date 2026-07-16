@@ -2,7 +2,7 @@
 for why: there are no Quiz 2 outcomes yet to train a model against)."""
 from src.features import _safe_mean, _trailing_zero_streak
 from src.patterns import detect_patterns
-from src.scoring import score_student
+from src.scoring import performance_risk, score_student
 from tests.test_patterns import base_features
 
 
@@ -56,3 +56,22 @@ def test_missing_attendance_is_not_treated_as_zero_in_feature_averages():
 def test_trailing_zero_streak_stops_at_missing_value():
     assert _trailing_zero_streak([5, 0, 0, None]) == 0  # trailing value is unknown, not zero
     assert _trailing_zero_streak([5, 0, 0, 0]) == 3
+
+
+def test_failing_quiz_score_floors_performance_risk_even_with_a_tiny_gap():
+    # A failing score (58/100) with a target only barely above it (gap=2)
+    # must still hit the fixed floor, not be diluted down to the tiny
+    # gap-based score a comfortable target would otherwise produce.
+    f = base_features(quiz1_score=58.0, gap_to_target=2.0)
+    codes = [p["code"] for p in detect_patterns(f)]
+    perf, reason = performance_risk(f, codes)
+    assert perf >= 15.0
+    assert reason == "FAILING_QUIZ_SCORE"
+
+
+def test_failing_quiz_score_scores_higher_than_a_passing_score_with_the_same_gap():
+    failing = base_features(quiz1_score=58.0, gap_to_target=2.0)
+    passing = base_features(quiz1_score=78.0, gap_to_target=2.0)
+    failing_perf, _ = performance_risk(failing, [p["code"] for p in detect_patterns(failing)])
+    passing_perf, _ = performance_risk(passing, [p["code"] for p in detect_patterns(passing)])
+    assert failing_perf > passing_perf

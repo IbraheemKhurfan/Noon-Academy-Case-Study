@@ -789,7 +789,8 @@ def render_notes_tab(user: dict, sid: str, row: pd.Series) -> None:
     notes_df = get_computed()["notes_df"]
     student_notes = notes_df[notes_df["student_id"] == sid].sort_values("date")
     for _, n in student_notes.iterrows():
-        trust_color = {"trusted": "#2e7d32", "unverified_ownership": "#d35400", "orphan": "#c0392b"}.get(n["trust_status"], "#777")
+        trust_color = {"trusted": "#2e7d32", "unverified_ownership": "#d35400",
+                       "content_mismatch": "#8e44ad", "orphan": "#c0392b"}.get(n["trust_status"], "#777")
         with st.container(border=True):
             st.markdown(f"**{n['date']}** &nbsp; "
                         f'<span class="badge" style="background:{trust_color}">{n["trust_status"]}</span>',
@@ -798,6 +799,9 @@ def render_notes_tab(user: dict, sid: str, row: pd.Series) -> None:
             if n["ai_summary"]:
                 st.caption(f"AI summary: {n['ai_summary']} · barrier: {n['ai_barrier']} · "
                            f"severity: {n['ai_severity']} · follow-up needed: {n['ai_follow_up_needed']}")
+            elif n["trust_status"] == "content_mismatch":
+                st.caption("Not analyzed — this note's text names a different student than the one it's filed "
+                           "under, so it's excluded from qualitative risk and parent communication until verified.")
             else:
                 st.caption("Not analyzed (untrusted note — excluded from qualitative risk and parent communication).")
 
@@ -1837,14 +1841,20 @@ def render_data_entry(user: dict) -> None:
     mine = risk_df[risk_df["facilitator_email"] == user["email"]]
 
     st.title("📝 Data Entry")
-    st.subheader("✍️ Manual daily metric entry")
+    st.caption("Attendance and practice numbers are collected automatically by the platform — you shouldn't "
+               "normally need to type them in. These tools are for fixing a specific day the automatic feed "
+               "got wrong or never received (a sync gap, a session logged under the wrong device, etc.), and "
+               "for the things that genuinely are yours to enter: notes and roster changes.")
+    st.subheader("✍️ Correct or backfill a metric")
+    st.caption("Use this when the automatically-collected attendance/practice for one day is missing or wrong "
+               "— not as the routine way data gets in.")
     with st.form("manual_metric"):
         student_label = st.selectbox("Student", mine["student_id"] + " — " + mine["student_name"])
         d = st.date_input("Date", value=SETTINGS.as_of_date)
         attendance = st.number_input("Attendance minutes (leave 0 and check box if unknown)", 0, 90, 60)
         unknown_attendance = st.checkbox("Attendance unknown / not recorded")
         practice = st.number_input("Practice questions", 0, 500, 10)
-        submitted = st.form_submit_button("💾 Save metric")
+        submitted = st.form_submit_button("💾 Save correction")
     if submitted:
         sid = student_label.split(" — ")[0]
         with session_scope() as session:
@@ -1858,8 +1868,9 @@ def render_data_entry(user: dict) -> None:
             existing.practice_questions = float(practice)
         refresh_and_rerun()
 
-    st.subheader("📤 CSV upload")
-    st.caption("Columns expected: student_id, date, attendance_min (or session_attended_min), practice_questions")
+    st.subheader("📤 Bulk correction (CSV)")
+    st.caption("For backfilling several days/students at once — e.g. after an outage in the automatic feed. "
+               "Columns expected: student_id, date, attendance_min (or session_attended_min), practice_questions")
     uploaded = st.file_uploader("Upload CSV", type="csv")
     if uploaded is not None:
         raw = pd.read_csv(uploaded, dtype={"student_id": str})
@@ -2136,7 +2147,7 @@ FACILITATOR_TOUR = [
     ("🎯", "Actions", "Everything due today, overdue, in progress, or completed — organized by status."),
     ("📞", "Parent Calls", "Today's parent-call queue, with an AI-drafted talking-points brief for each call."),
     ("📅", "Calendar", "Create 1-on-1 booking slots for a student and share the link — no login needed to book."),
-    ("📝", "Data Entry", "Log a metric by hand, or bulk-import a CSV of attendance/practice data."),
+    ("📝", "Data Entry", "Fix a day the automatic attendance/practice feed missed, upload notes in bulk, or edit the roster."),
     ("🤖", "Ask AI", "Chat with an AI grounded in your own live data — saved as renameable conversations."),
 ]
 ADMIN_TOUR = [

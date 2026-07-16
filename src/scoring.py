@@ -4,10 +4,15 @@ There are no Quiz 2 outcomes yet to train a model against, so risk is a
 transparent weighted rule system instead of a trained classifier — every
 point in the score traces back to a named, testable rule (see tests/test_risk.py).
 
-Performance risk intentionally folds quiz score *and* gap-to-target into one
-0-25 bucket instead of scoring them separately, because they are the same
-underlying fact (how far below target the last quiz put the student) —
-scoring both independently would double-count one piece of evidence.
+Performance risk folds two related-but-distinct facts into one 0-25 bucket
+rather than scoring them as separate weighted components (which would let a
+student's score double-count against both): how far below their own target
+the last quiz put them, and whether that quiz score is a failing grade
+(<60/100) in absolute terms. Target scores vary a lot per student and are
+sometimes ambitious, so a student failing outright must never score lower on
+this axis than one who is merely a little under a high personal target —
+the failing case takes a floor, not just an add-on, so it can't be diluted
+by a small gap.
 
 Learning track is never scored directly. It is used only as context for
 peer-group selection (see features.add_peer_percentiles) — a Remedial-track
@@ -16,6 +21,8 @@ student is not penalized simply for being in that track.
 from __future__ import annotations
 
 from typing import Any, Optional
+
+from src.config import FAILING_SCORE_THRESHOLD
 
 MAX_PERFORMANCE = 25
 MAX_ENGAGEMENT = 25
@@ -43,17 +50,34 @@ def risk_level_for(score: float) -> str:
     return "Low"
 
 
-def performance_risk(f: dict) -> tuple[float, Optional[str]]:
+def performance_risk(f: dict, pattern_codes: list[str]) -> tuple[float, Optional[str]]:
     if f.get("quiz1_score") is None:
         # Unknown, not zero — a missing score is a data problem
         # (POSSIBLE_MISSED_ASSESSMENT), not evidence the student is fine.
         return 15.0, "MISSING_QUIZ_SCORE"
+
     gap = f.get("gap_to_target") or 0
-    if gap <= 0:
+    gap_score = _clip(MAX_PERFORMANCE * gap / LARGE_GAP_NORMALIZER, 0, MAX_PERFORMANCE) if gap > 0 else 0.0
+
+    if "FAILING_QUIZ_SCORE" in pattern_codes:
+        # A failing score is an absolute-floor concern, independent of this
+        # student's own (possibly modest, possibly ambitious) target — never
+        # scored lower than a fixed floor just because their personal target
+        # happens to be close to their score. Floors at 15/25 right at the
+        # failing line and rises toward the 25 cap the further below it they
+        # are; still takes the larger of this or the plain gap-based score,
+        # so a failing student with an unusually large gap isn't scored down.
+        quiz1_score = f["quiz1_score"]
+        failing_score = _clip(
+            15 + 10 * (FAILING_SCORE_THRESHOLD - quiz1_score) / FAILING_SCORE_THRESHOLD,
+            15, MAX_PERFORMANCE,
+        )
+        return max(gap_score, failing_score), "FAILING_QUIZ_SCORE"
+
+    if gap_score <= 0:
         return 0.0, None
-    score = _clip(MAX_PERFORMANCE * gap / LARGE_GAP_NORMALIZER, 0, MAX_PERFORMANCE)
-    reason = "LARGE_PERFORMANCE_GAP" if score >= 15 else ("MODERATE_PERFORMANCE_GAP" if score >= 7 else None)
-    return score, reason
+    reason = "LARGE_PERFORMANCE_GAP" if gap_score >= 15 else ("MODERATE_PERFORMANCE_GAP" if gap_score >= 7 else None)
+    return gap_score, reason
 
 
 def engagement_risk(f: dict) -> tuple[float, Optional[str]]:
@@ -126,7 +150,7 @@ def confidence_score(f: dict) -> float:
         confidence -= 0.2
     if flags & {"ATTENDANCE_OUT_OF_RANGE", "NEGATIVE_PRACTICE", "QUIZ_SCORE_DATE_ANOMALY"}:
         confidence -= 0.1
-    if "NOTE_OWNERSHIP_CONFLICT" in flags:
+    if flags & {"NOTE_OWNERSHIP_CONFLICT", "NOTE_CONTENT_MISMATCH"}:
         confidence -= 0.1
     if f.get("n_metric_rows", 0) < 8:
         confidence -= 0.1
@@ -147,7 +171,7 @@ def urgency_score(f: dict, risk_level: str) -> float:
 
 
 def score_student(f: dict, pattern_codes: list[str], trusted_note_analyses: list[dict]) -> dict[str, Any]:
-    perf, perf_reason = performance_risk(f)
+    perf, perf_reason = performance_risk(f, pattern_codes)
     eng, eng_reason = engagement_risk(f)
     traj, traj_reason = trajectory_risk(pattern_codes)
     note_risk, note_reason = trusted_note_risk(trusted_note_analyses)

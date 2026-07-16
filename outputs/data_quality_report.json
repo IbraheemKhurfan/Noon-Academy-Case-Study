@@ -4,9 +4,9 @@
     "daily_metrics": 2000,
     "facilitator_notes": 180
   },
-  "total_issue_checks": 5,
-  "total_flagged_rows": 110,
-  "students_with_quality_flags": 51,
+  "total_issue_checks": 6,
+  "total_flagged_rows": 165,
+  "students_with_quality_flags": 70,
   "checks": [
     {
       "check": "invalid_parent_phone",
@@ -63,6 +63,24 @@
         "S038",
         "S039",
         "S049"
+      ]
+    },
+    {
+      "check": "note_content_mismatch",
+      "severity": "warning",
+      "count": 55,
+      "description": "Note text names a different student than the one it's filed under (e.g. mentions \"Ahmad\" on a note attached to a student named \"Omar\"). We cannot tell whether the note's student_id or the roster name is the one that's wrong, only that they disagree — retained, but excluded from parent communication and qualitative risk contribution until verified.",
+      "sample_student_ids": [
+        "S004",
+        "S005",
+        "S006",
+        "S008",
+        "S009",
+        "S017",
+        "S023",
+        "S024",
+        "S027",
+        "S028"
       ]
     }
   ]

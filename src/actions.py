@@ -92,6 +92,13 @@ def recommend_action(f: dict, patterns: list[dict], risk_level: str, as_of: date
     elif "DATA_QUALITY_RISK" in codes and risk_level in ("Critical", "High"):
         primary_pattern = _pick_primary_pattern(patterns, "DATA_QUALITY_RISK")
         action_type = "DATA_REVIEW"
+    elif "FAILING_QUIZ_SCORE" in codes and risk_level in ("Critical", "High", "Medium"):
+        # A failing score needs real academic help, not just encouragement —
+        # a motivational message doesn't close a skills gap. Checked ahead of
+        # the generic below-target fallback so a failing student never lands
+        # on a plain "send a nice message" recommendation.
+        primary_pattern = _pick_primary_pattern(patterns, "FAILING_QUIZ_SCORE")
+        action_type = "ONE_TO_ONE_TUTORING" if risk_level in ("Critical", "High") else "PRACTICE_PLAN"
     elif f.get("below_target") and risk_level in ("Medium", "Low"):
         primary_pattern = _pick_primary_pattern(patterns, "STABLE_HEALTHY_BEHAVIOR") or _pick_primary_pattern(patterns, "LARGE_TARGET_GAP")
         action_type = "MOTIVATIONAL_MESSAGE"

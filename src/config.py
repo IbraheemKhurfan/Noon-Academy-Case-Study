@@ -72,7 +72,7 @@ def load_settings() -> Settings:
 
 SETTINGS = load_settings()
 
-# Business constants defined by the case study itself (not derived from data).
+# Fixed business constants (not derived from data).
 TARGET_COVERAGE = 0.80
 RISK_LEVELS = (
     ("Critical", 70, 100),
@@ -80,6 +80,34 @@ RISK_LEVELS = (
     ("Medium", 30, 49),
     ("Low", 0, 29),
 )
+
+# A score below this is a failing grade in absolute terms, independent of
+# whatever personal target a student happens to have — see scoring.py and
+# patterns.py for how this is weighed alongside (not instead of) the
+# target-gap signal.
+FAILING_SCORE_THRESHOLD = 60
+
+# Arabic first-name spellings for every first name that appears in this
+# cohort's roster (student_metadata.csv), used only to detect when a
+# facilitator note's free text names a different student than the one it's
+# filed under (see validation.py's content-mismatch check). This is a
+# small, hand-built lookup for this specific dataset's roster — a
+# different cohort with different names would need this table extended;
+# there is no general Arabic<->English name-transliteration library here.
+ARABIC_NAME_VARIANTS = {
+    "Abdullah": ["عبدالله", "عبد الله"],
+    "Ahmad": ["احمد", "أحمد"],
+    "Amal": ["أمل", "امل"],
+    "Fatima": ["فاطمة", "فاطمه"],
+    "Hassan": ["حسن"],
+    "Khalid": ["خالد"],
+    "Layla": ["ليلى", "ليلا"],
+    "Maryam": ["مريم"],
+    "Nora": ["نورة", "نوره", "نورا"],
+    "Omar": ["عمر"],
+    "Sara": ["سارة", "ساره", "سارا"],
+    "Yousef": ["يوسف"],
+}
 
 
 def risk_level_for(score: float) -> str:

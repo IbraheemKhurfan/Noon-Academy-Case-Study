@@ -14,6 +14,8 @@ from typing import Any
 
 import pandas as pd
 
+from src.config import ARABIC_NAME_VARIANTS
+
 ATTENDANCE_MIN = 0
 ATTENDANCE_MAX = 90
 # A genuinely intense practice day tops out well under this. Anything beyond
@@ -180,6 +182,42 @@ def validate_metrics(metrics: pd.DataFrame, valid_student_ids: set[str], quiz1_d
     return metrics
 
 
+def _detect_content_mismatch(notes: pd.DataFrame, meta: pd.DataFrame) -> pd.Series:
+    """Some notes' free text names a different student than the student_id
+    they're filed under — e.g. a note attached to "Omar Al-Harbi" whose text
+    only ever mentions "Ahmad." We can't tell from the data alone whether
+    the note_id/student_id pairing or the metadata name is the one that's
+    wrong, only that they disagree, so this is a distinct, conservative flag
+    — never resolved into a guessed reassignment, just surfaced and (like
+    any other unverified note) excluded from risk scoring and parent
+    communication until a human confirms which side is right.
+
+    Matching is a plain substring check of each roster first name's known
+    Arabic spellings against the note text — not an NLU pass. Two
+    documented, accepted limitations: a note that never names anyone is
+    invisible to this check (no evidence either way, so not flagged), and
+    two different students sharing a first name can't be told apart by it.
+    Both are cheaper and more auditable than they'd be to fully resolve,
+    and consistent with this module's rule of flagging rather than guessing."""
+    name_by_id = meta.set_index("student_id")["student_name"]
+    first_name_by_id = name_by_id.str.split().str[0]
+
+    def check(row) -> bool:
+        assigned_first = first_name_by_id.get(row["student_id"], "")
+        text = str(row["note_text"])
+        own_variants = ARABIC_NAME_VARIANTS.get(assigned_first, [])
+        if any(v in text for v in own_variants):
+            return False
+        for other_first, other_variants in ARABIC_NAME_VARIANTS.items():
+            if other_first == assigned_first:
+                continue
+            if any(v in text for v in other_variants):
+                return True
+        return False
+
+    return notes.apply(check, axis=1)
+
+
 def validate_notes(notes: pd.DataFrame, meta: pd.DataFrame, issues: list[Issue]) -> pd.DataFrame:
     _check_required_columns(notes, REQUIRED_NOTE_COLS, "facilitator_notes", issues)
     notes = notes.copy()
@@ -200,9 +238,12 @@ def validate_notes(notes: pd.DataFrame, meta: pd.DataFrame, issues: list[Issue])
     notes["expected_facilitator"] = notes["student_id"].map(owner_map)
     mismatch = notes["facilitator_email"] != notes["expected_facilitator"]
 
+    content_mismatch = _detect_content_mismatch(notes, meta) & ~orphan & ~mismatch
+
     notes["trust_status"] = "trusted"
     notes.loc[orphan, "trust_status"] = "orphan"
     notes.loc[mismatch & ~orphan, "trust_status"] = "unverified_ownership"
+    notes.loc[content_mismatch, "trust_status"] = "content_mismatch"
 
     n_mismatch = int((mismatch & ~orphan).sum())
     if n_mismatch:
@@ -211,6 +252,16 @@ def validate_notes(notes: pd.DataFrame, meta: pd.DataFrame, issues: list[Issue])
                              "student_metadata. Retained, but excluded from parent communication and "
                              "qualitative risk contribution until trusted.",
                              _sample_ids(notes.loc[mismatch & ~orphan, "student_id"])))
+
+    n_content_mismatch = int(content_mismatch.sum())
+    if n_content_mismatch:
+        issues.append(Issue("note_content_mismatch", "warning", n_content_mismatch,
+                             "Note text names a different student than the one it's filed under (e.g. mentions "
+                             "\"Ahmad\" on a note attached to a student named \"Omar\"). We cannot tell whether "
+                             "the note's student_id or the roster name is the one that's wrong, only that they "
+                             "disagree — retained, but excluded from parent communication and qualitative risk "
+                             "contribution until verified.",
+                             _sample_ids(notes.loc[content_mismatch, "student_id"])))
     return notes
 
 
@@ -231,6 +282,7 @@ def build_quality_flags(meta: pd.DataFrame, metrics: pd.DataFrame, notes: pd.Dat
     add(metrics.loc[metrics["practice_extreme"], "student_id"].unique(), "EXTREME_PRACTICE")
     add(metrics.loc[metrics["quiz_score_date_anomaly"], "student_id"].unique(), "QUIZ_SCORE_DATE_ANOMALY")
     add(notes.loc[notes["trust_status"] == "unverified_ownership", "student_id"].unique(), "NOTE_OWNERSHIP_CONFLICT")
+    add(notes.loc[notes["trust_status"] == "content_mismatch", "student_id"].unique(), "NOTE_CONTENT_MISMATCH")
     return flags
 
 

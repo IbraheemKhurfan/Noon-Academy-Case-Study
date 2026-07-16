@@ -111,3 +111,42 @@ def test_facilitator_ownership_mismatch_is_flagged_but_retained():
     assert len(result.notes) == 1  # retained, not dropped
     assert result.notes.iloc[0]["trust_status"] == "unverified_ownership"
     assert any(i.check == "facilitator_ownership_mismatch" for i in result.issues)
+
+
+def _named_meta():
+    return _meta([
+        {"student_id": "S1", "student_name": "Omar Al-Harbi", "campus_id": "C1", "facilitator_email": "f1@x.com",
+         "grade": 10, "parent_phone": "+966501111111", "target_score": 80, "learning_track": "Standard"},
+        {"student_id": "S2", "student_name": "Ahmad Al-Faraj", "campus_id": "C1", "facilitator_email": "f1@x.com",
+         "grade": 10, "parent_phone": "+966501111112", "target_score": 80, "learning_track": "Standard"},
+    ])
+
+
+def _single_metric_row():
+    return _metrics([{"student_id": "S1", "date": date(2025, 10, 1), "session_attended_min": 60,
+                       "practice_questions": 5, "last_quiz_score": None}])
+
+
+def test_note_naming_a_different_roster_student_is_flagged_content_mismatch():
+    # Filed under S1 (Omar) but the text only ever names "Ahmad" (احمد) — a
+    # different student in the same roster, never Omar's own name (عمر).
+    notes = _notes([("N1", "S1", "f1@x.com", date(2025, 10, 11), "احمد ما حضر اليوم")])
+    result = run_validation(_named_meta(), _single_metric_row(), notes, QUIZ1)
+
+    assert len(result.notes) == 1  # retained, not dropped
+    assert result.notes.iloc[0]["trust_status"] == "content_mismatch"
+    assert any(i.check == "note_content_mismatch" for i in result.issues)
+
+
+def test_note_naming_the_assigned_student_is_trusted():
+    notes = _notes([("N1", "S1", "f1@x.com", date(2025, 10, 11), "عمر ما حضر اليوم")])
+    result = run_validation(_named_meta(), _single_metric_row(), notes, QUIZ1)
+    assert result.notes.iloc[0]["trust_status"] == "trusted"
+
+
+def test_note_naming_nobody_is_not_guessed_as_a_mismatch():
+    # No roster name mentioned at all — no evidence either way, so this
+    # stays trusted rather than being flagged on a guess.
+    notes = _notes([("N1", "S1", "f1@x.com", date(2025, 10, 11), "الطالب لم يحضر اليوم")])
+    result = run_validation(_named_meta(), _single_metric_row(), notes, QUIZ1)
+    assert result.notes.iloc[0]["trust_status"] == "trusted"

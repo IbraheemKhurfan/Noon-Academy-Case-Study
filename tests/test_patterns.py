@@ -79,3 +79,20 @@ def test_no_note_at_all_does_not_falsely_trigger_unresolved_follow_up():
     f = base_features(last_note_follow_up_needed=None)
     result = codes(detect_patterns(f))
     assert "UNRESOLVED_FOLLOW_UP" not in result
+
+
+def test_failing_quiz_score_detected_even_with_a_small_target_gap():
+    # 58/100 is failing in absolute terms even though this student's target
+    # (60) is barely above their score — a tiny gap must not hide it.
+    f = base_features(quiz1_score=58.0, gap_to_target=2.0)
+    result = codes(detect_patterns(f))
+    assert "FAILING_QUIZ_SCORE" in result
+
+
+def test_passing_score_never_flagged_as_failing_even_with_a_large_target_gap():
+    # 70/100 against an ambitious target of 95 (gap=25) is a real gap, but
+    # not a failing score — the two signals must stay distinct.
+    f = base_features(quiz1_score=70.0, gap_to_target=25.0)
+    result = codes(detect_patterns(f))
+    assert "FAILING_QUIZ_SCORE" not in result
+    assert "LARGE_TARGET_GAP" in result
